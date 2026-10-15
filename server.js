@@ -1086,6 +1086,16 @@ function windowText(d) {
   return best ? `${best[0]}–${best[1] + 1} Uhr` : null;
 }
 let belowDay = null; // Tag, an dem der Akku unter 95 % war (erst danach zählt "voll")
+// Eine Mitteilung gilt erst als erledigt, wenn sie mindestens ein Gerät erreicht hat. Sonst nächste Minute nochmals,
+// nach 5 Fehlversuchen wird aufgegeben (bis zum nächsten Anlass), damit nichts endlos versucht wird.
+const tries = {};
+async function sendOnce(key, value, msg) {
+  const r = await pushAll(msg);
+  if (r.sent || (tries[key] = (tries[key] || 0) + 1) >= 5) {
+    markSent(key, value); delete tries[key];
+    if (!r.sent) console.error(new Date().toISOString(), `Mitteilung "${msg.title}" aufgegeben: ${r.error || 'kein Gerät erreicht'}`);
+  }
+}
 async function notifyTick() {
   const s = settings;
   if (CFG.demo || !meta('pushSubs', []).length) return;
@@ -1094,25 +1104,25 @@ async function notifyTick() {
     if (s.pushOutage && lastOk) {
       const down = now - lastOk > 15 * 60e3;
       if (down && !notifyState.outage) {
-        markSent('outage', now);
-        await pushAll({ title: 'Solar-Log antwortet nicht', body: `Seit ${clockOf(lastOk)} keine Daten.${lastError ? ` ${lastError}.` : ''}`, url: './', tag: 'outage', urgent: true });
+        await sendOnce('outage', now, { title: 'Solar-Log antwortet nicht', body: `Seit ${clockOf(lastOk)} keine Daten.${lastError ? ` ${lastError}.` : ''}`, url: './', tag: 'outage', urgent: true });
       } else if (!down && notifyState.outage) {
-        markSent('outage', 0);
-        await pushAll({ title: 'Solar-Log wieder erreichbar', body: 'Die Daten kommen wieder, Lücken werden aus der Tageskurve ergänzt.', url: './?tab=day&w=day', tag: 'outage' });
+        await sendOnce('outage', 0, { title: 'Solar-Log wieder erreichbar', body: 'Die Daten kommen wieder, Lücken werden aus der Tageskurve ergänzt.', url: './?tab=day&w=day', tag: 'outage' });
       }
     }
     const b = live.bat;
     if (b && b.soc < 95) belowDay = day;
     if (s.pushFull && b && b.soc >= 99 && belowDay === day && notifyState.fullDay !== day) {
-      markSent('fullDay', day);
-      await pushAll({ title: 'Akku voll', body: `Der Akku ist um ${hm} voll geladen.`, url: './?tab=day&w=battery', tag: 'battery' });
+      await sendOnce('fullDay', day, { title: 'Akku voll', body: `Der Akku ist um ${hm} voll geladen.`, url: './?tab=day&w=battery', tag: 'battery' });
     }
-    if (s.pushEvening && hm >= (s.pushEveningTime || '19:00') && notifyState.eveningDay !== day) {
-      markSent('eveningDay', day);
+    // Ausblick: einmal pro Tag und eingestellter Uhrzeit (eine neue Uhrzeit gilt auch am selben Tag); ohne Prognose warten
+    const at = s.pushEveningTime || '19:00', mark = `${day} ${at}`;
+    if (s.pushEvening && hm >= at && notifyState.eveningDay !== mark) {
       const f = apiForecast(), m = f?.days?.[f.tomorrow];
-      if (m) {
+      if (!m) { if (!tries.noForecast) console.error(new Date().toISOString(), 'Ausblick wartet: noch keine Prognose für morgen', f?.error || ''); tries.noForecast = 1; }
+      else {
+        delete tries.noForecast;
         const w = windowText(m);
-        await pushAll({ title: `Morgen ca. ${kwh1(m.wh)} kWh`, body: [m.weather, w ? `Gutes Zeitfenster für grosse Geräte: ${w}` : 'Kaum Überschuss für grosse Geräte.'].filter(Boolean).join(' · '),
+        await sendOnce('eveningDay', mark, { title: `Morgen ca. ${kwh1(m.wh)} kWh`, body: [m.weather, w ? `Gutes Zeitfenster für grosse Geräte: ${w}` : 'Kaum Überschuss für grosse Geräte.'].filter(Boolean).join(' · '),
           url: './?tab=now', tag: 'evening' });
       }
     }
