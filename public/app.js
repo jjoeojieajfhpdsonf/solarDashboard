@@ -2700,7 +2700,7 @@
     const board = $('board'), cols = Number(getComputedStyle(board).getPropertyValue('--cols')) || 2;
     const wraps = [...board.children].filter((w) => w.classList.contains('wi'));
     wraps.forEach((w) => { w.style.gridColumn = ''; w.style.gridRow = ''; w.style.alignSelf = ''; });
-    if (editing || cols <= 2 || !wraps.length) return;
+    if (cols <= 2 || !wraps.length) return; // auch beim Bearbeiten gleich angeordnet wie sonst
     const base = (w) => {
       const sz = w.className.match(/sz-(\w+)/)?.[1] || 's', det = w.classList.contains('detail') || w.classList.contains('panel');
       return { w, det, mini: !det, wd: sz === 'xl' ? cols : sz === 'l' && det ? Math.max(2, Math.floor(cols / 2)) : sz === 's' ? 1 : 2 };
@@ -2860,6 +2860,7 @@
     if (!t || Date.now() - drag.last < 180) return;
     const kids = [...board.children];
     board.insertBefore(el, kids.indexOf(el) < kids.indexOf(t) ? t.nextSibling : t);
+    fillRows(); // Zeilen nach der neuen Reihenfolge neu füllen
     drag.last = Date.now();
   }
   window.addEventListener('pointermove', (e) => {
