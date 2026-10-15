@@ -15,6 +15,9 @@
   const f0 = nf(0), f1 = nf(1), f2 = nf(2);
   const kW = (w) => (w >= 10000 ? f1 : f2).format(w / 1000);
   const power = (w) => w == null ? '–' : w < 1000 ? `${f0.format(w)} W` : `${f2.format(w / 1000)} kW`;
+  // Leistung als Zahl und Einheit getrennt (für grosse Zahlen mit kleiner Einheit): unter 1 kW in Watt, sonst kW
+  const pw = (w) => { const v = Math.max(0, Math.round(w || 0)); return v < 1000 ? [f0.format(v), 'W'] : [kW(v), 'kW']; };
+  const pwHTML = (w) => { const [v, u] = pw(w); return `${v}<small>${u}</small>`; };
   const kWh = (wh) => wh == null ? '–' : (Math.abs(wh) >= 100000 ? f0 : f1).format(wh / 1000);
   const kWhU = (wh) => wh == null ? '–' : `${kWh(wh)} kWh`;
   const pct = (x) => x == null || !isFinite(x) ? '–' : f0.format(x * 100);
@@ -802,7 +805,7 @@
           const mode = x.feed > 300 ? ['Überschuss', 'var(--feed)', 'Guter Moment für grosse Geräte'] : x.imp > 300 ? ['Netzbezug', 'var(--imp-bright)', 'Das Haus braucht mehr, als da ist']
             : x.fromBat > 15 ? ['Akku-Betrieb', 'var(--bat-bright)', 'Das Haus läuft mit dem Akku'] : x.toBat > 15 ? ['Akku lädt', 'var(--own)', 'Solarstrom geht in den Akku'] : ['Solarstrom', 'var(--own)', 'Das Haus läuft mit Sonne'];
           setHTML(c, `<p class="mw-mode"><i style="background:${mode[1]}"></i>${mode[0]}</p>`
-            + (ctx.size === 'm' ? `<div class="mw-row mw-foot">${[['Solar', l.pv], ['Haus', l.cons], [x.feed > 15 ? 'Einspeisung' : 'Netz', x.feed > 15 ? x.feed : x.imp]].map(([k, w]) => `<div><p class="mw-s">${k}</p><p class="mw-v sm">${kW(w)}<small>kW</small></p></div>`).join('')}</div>` : ''));
+            + (ctx.size === 'm' ? `<div class="mw-row mw-foot">${[['Solar', l.pv], ['Haus', l.cons], [x.feed > 15 ? 'Einspeisung' : 'Netz', x.feed > 15 ? x.feed : x.imp]].map(([k, w]) => `<div><p class="mw-s">${k}</p><p class="mw-v sm">${pwHTML(w)}</p></div>`).join('')}</div>` : ''));
         };
         ctx.update();
       },
@@ -841,7 +844,7 @@
           const share = state.kwp ? l.pv / (state.kwp * 1000) : null;
           const r = 15, C = 2 * Math.PI * r, ring = share == null ? '' : `<svg class="mw-ring" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="${r}" fill="none" style="stroke:rgb(var(--fg-rgb) / .1)" stroke-width="5"/><circle cx="20" cy="20" r="${r}" fill="none" stroke="var(--sun)" stroke-width="5" stroke-linecap="round" stroke-dasharray="${(C * Math.min(1, share)).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 20 20)"/></svg>`;
           const peak = cv ? Math.max(0, ...cv.pv.filter((v) => v != null)) : null;
-          setHTML(c, `<div class="mw-split">${big(kW(l.pv), 'kW')}${ctx.size === 's' ? '' : ring}</div>`
+          setHTML(c, `<div class="mw-split">${big(...pw(l.pv))}${ctx.size === 's' ? '' : ring}</div>`
             + `<p class="mw-s">${l.pv > 15 ? (share != null ? `${pct(share)} % der Leistung` : '') : 'Keine Produktion'}${ctx.size !== 's' && peak ? ` · Spitze heute ${f1.format(peak)} kW` : ''}</p>`
             + (ctx.size === 's' ? `<div class="mw-foot">${ring}</div>` : cv ? sparkSVG([{ vals: cv.pv, color: 'var(--sun)', fill: true }], Math.max(1, peak * 1.05)) : ''));
         };
@@ -946,7 +949,7 @@
         ctx.update = () => {
           const l = state?.live, t = state?.today || {}; if (!l) return;
           const x = liveSplit(l), feeding = x.feed > 15;
-          setHTML(c, big(kW(feeding ? x.feed : x.imp), 'kW') + `<p class="mw-s" style="color:${feeding ? 'var(--feed)' : x.imp > 15 ? 'var(--imp-bright)' : 'var(--muted)'}">${feeding ? 'Einspeisung' : x.imp > 15 ? 'Bezug' : 'Kein Austausch'}</p>`
+          setHTML(c, big(...pw(feeding ? x.feed : x.imp)) + `<p class="mw-s" style="color:${feeding ? 'var(--feed)' : x.imp > 15 ? 'var(--imp-bright)' : 'var(--muted)'}">${feeding ? 'Einspeisung' : x.imp > 15 ? 'Bezug' : 'Kein Austausch'}</p>`
             + `<div class="mw-foot">${ctx.size === 'm' ? `<div class="mw-row two"><div><p class="mw-s">heute bezogen</p><p class="mw-v sm">${kWh(t.importWh)}<small>kWh</small></p></div><div><p class="mw-s">heute eingespeist</p><p class="mw-v sm">${kWh(t.feedWh)}<small>kWh</small></p></div></div>` : `<p class="mw-s">heute ${kWhU(t.feedWh)} eingespeist</p>`}</div>`);
         };
         ctx.update();
@@ -1337,9 +1340,9 @@
           prof.peaks.forEach((p) => { svg += `<circle cx="${x((p.from + p.to) / 2)}" cy="${y(p.maxW)}" r="2.6" class="ty-peak"/>`; });
           for (const hh of [0, 6, 12, 18]) svg += `<text x="${x(hh * 4)}" y="${H - 2}" class="ty-ax">${hh}</text>`;
           svg += '</svg>';
-          const peaks = prof.peaks.map((p) => `<div class="ty-p"><b>${hm(p.from)}–${hm(p.to)}</b><span>bis ${f1.format(p.maxW / 1000)} kW · ${f1.format(p.wh / 1000)} kWh</span></div>`).join('');
+          const peaks = prof.peaks.map((p) => `<div class="ty-p"><b>${hm(p.from)}–${hm(p.to)}</b><span>bis ${power(p.maxW)} · ${f1.format(p.wh / 1000)} kWh</span></div>`).join('');
           setHTML(c, `<div class="mw-row two"><div>${big(`ca. ${f0.format(prof.typicalWh / 1000)}`, 'kWh').replace('mw-v', 'mw-v sm')}<p class="mw-s">pro Tag</p></div>`
-            + `<div>${big(f1.format(prof.base / 1000), 'kW').replace('mw-v', 'mw-v sm')}<p class="mw-s">Grundlast</p></div></div>`
+            + `<div>${big(...pw(prof.base)).replace('mw-v', 'mw-v sm')}<p class="mw-s">Grundlast</p></div></div>`
             + svg + (ctx.size === 'l' ? (peaks ? `<p class="mw-s">Spitzen, die fast jeden Tag kommen</p><div class="ty-peaks">${peaks}</div>` : '<p class="mw-s">Keine Spitzen, die jeden Tag wiederkommen.</p>') : '')
             + `<p class="mw-s mw-foot">Median aus ${prof.days} Tagen</p>`);
         };
@@ -1568,7 +1571,7 @@
             <svg class="house" viewBox="0 0 400 330" role="img" aria-label="Haus mit Solaranlage, Batterie und Netzanschluss">${houseSVG()}</svg>
             <div class="now">
               <p class="now-label">Produktion jetzt</p>
-              <p class="now-value"><span data-k="pv">–</span><span class="unit">kW</span></p>
+              <p class="now-value"><span data-k="pv">–</span><span class="unit" data-k="pvU">kW</span></p>
               <p class="now-sub" data-k="sub"></p>
               <dl class="now-list">
                 <div><dt>Verbrauch</dt><dd data-k="cons">–</dd></div>
@@ -1614,10 +1617,10 @@
           const fromBat = Math.min(dis, cons - self), imp = Math.max(cons - self - fromBat, 0);
           const share = state.kwp ? pv / (state.kwp * 1000) : null;
 
-          setTag('pv', kW(pv) + ' kW', pv > 15 ? (share != null ? `${pct(share)} % Leistung` : '') : 'keine Produktion', 'var(--sun-ink)');
-          setTag('house', kW(cons) + ' kW', '', '');
-          setTag('bat', b ? `${kW(chg > 15 ? chg : dis)} kW` : '–', b ? (chg > 15 ? 'Laden' : dis > 15 ? 'Entladen' : 'Ruht') : '', chg > 15 ? 'var(--own)' : dis > 15 ? 'var(--bat-bright)' : 'var(--muted)');
-          setTag('grid', kW(feed > 15 ? feed : imp) + ' kW', feed > 15 ? 'Einspeisung' : imp > 15 ? 'Bezug' : '', feed > 15 ? 'var(--feed)' : 'var(--imp-bright)');
+          setTag('pv', power(pv), pv > 15 ? (share != null ? `${pct(share)} % Leistung` : '') : 'keine Produktion', 'var(--sun-ink)');
+          setTag('house', power(cons), '', '');
+          setTag('bat', b ? power(chg > 15 ? chg : dis) : '–', b ? (chg > 15 ? 'Laden' : dis > 15 ? 'Entladen' : 'Ruht') : '', chg > 15 ? 'var(--own)' : dis > 15 ? 'var(--bat-bright)' : 'var(--muted)');
+          setTag('grid', power(feed > 15 ? feed : imp), feed > 15 ? 'Einspeisung' : imp > 15 ? 'Bezug' : '', feed > 15 ? 'var(--feed)' : 'var(--imp-bright)');
           // Leitlinien enden am Rand des Textblocks (nächster Punkt zum Bauteil, mit etwas Abstand), nicht im Text
           qa('path[data-l]').forEach((ln) => {
             const t = q(`text[data-t="${ln.dataset.l}"]`); if (!t) return;
@@ -1646,15 +1649,15 @@
           qa('.cell').forEach((c) => c.setAttribute('fill', b && b.soc > Number(c.dataset.i) * 25 ? '#3CC495' : '#C9CFDD'));
 
           // grosse Anzeige (nur bei breitem Widget sichtbar)
-          q('[data-k="pv"]').textContent = kW(pv);
+          { const [v, u] = pw(pv); q('[data-k="pv"]').textContent = v; q('[data-k="pvU"]').textContent = u; }
           q('[data-k="sub"]').textContent = pv === 0 ? 'Die Anlage produziert gerade nicht.' : share != null ? `${pct(share)} % der installierten Leistung` : '';
-          setHTML(q('[data-k="cons"]'), `${kW(cons)}<small>kW</small>`);
+          setHTML(q('[data-k="cons"]'), pwHTML(cons));
           q('[data-k="gridLbl"]').textContent = feed > 0 ? 'Einspeisung' : 'Netzbezug';
-          setHTML(q('[data-k="grid"]'), `${kW(feed > 0 ? feed : imp)}<small>kW</small>`);
+          setHTML(q('[data-k="grid"]'), pwHTML(feed > 0 ? feed : imp));
           q('[data-k="batBox"]').hidden = !b;
           if (b) {
             q('[data-k="batLbl"]').textContent = chg > 15 ? 'Batterie lädt' : dis > 15 ? 'Batterie entlädt' : 'Batterie';
-            setHTML(q('[data-k="bat"]'), `${kW(chg > 15 ? chg : dis > 15 ? dis : 0)}<small>kW</small>`);
+            setHTML(q('[data-k="bat"]'), pwHTML(chg > 15 ? chg : dis > 15 ? dis : 0));
           }
         };
         // Wetter hinter dem Haus: Szene nach aktuellem Wetter und Tageszeit, Temperatur oben links.
