@@ -886,7 +886,13 @@
           const est = r && !r.cap ? `<p class="mw-s mw-foot">Kapazität geschätzt: ca. ${f1.format(r.inPct * 0.095)} kWh</p>` : '';
           let head = 'Akku', html;
           if (!r) html = '<p class="mw-s">Noch zu wenig Messwerte für eine Prognose.</p>';
-          else if (r.mode === 'full') { head = 'Akku'; html = big('Voll', '') + '<p class="mw-s">Der Akku ist geladen.</p>'; }
+          else if ((r.mode === 'full' || r.mode === 'idle') && r.lowest) {
+            head = r.mode === 'full' ? 'Akku voll' : 'Akku ruht';
+            const day = new Date(Date.now() + r.lowest.t * 60e3).getDate() !== new Date().getDate() ? 'morgen ' : '';
+            html = big(`ca. ${f0.format(r.lowest.soc)}`, '%') + `<p class="mw-s">tiefster Stand ${day}um ${clockIn(r.lowest.t)}`
+              + (r.mode === 'full' && r.fullUntil ? `, voll bis ca. ${clockIn(r.fullUntil)}` : '') + '</p>';
+          }
+          else if (r.mode === 'full') { head = 'Akku voll'; html = big('Voll', '') + '<p class="mw-s">Bleibt voll.</p>'; }
           else if (r.mode === 'idle') html = big(f0.format(l.bat.soc), '%') + '<p class="mw-s">Ruht gerade.</p>';
           else if (r.mode === 'charge' && r.full) { head = 'Akku voll'; html = big(`ca. ${clockIn(r.at)}`, 'Uhr') + `<p class="mw-s">in ${durText(r.at)}</p>`; }
           else if (r.mode === 'charge') { head = 'Akku heute'; html = big(`ca. ${f0.format(r.peak.soc)}`, '%') + `<p class="mw-s">wird nicht voll, höchstens um ${clockIn(r.peak.t)}</p>`; }
@@ -894,7 +900,11 @@
           else if (r.mode === 'discharge' && !r.open) { head = 'Akku reicht'; html = big(`ca. ${clockIn(r.at)}`, 'Uhr') + `<p class="mw-s">bis die Sonne übernimmt, dann noch ca. ${f0.format(r.soc)} %</p>`; }
           else html = big(f0.format(l.bat.soc), '%') + '<p class="mw-s">Reicht länger als 36 h.</p>';
           if (k) k.lastChild.textContent = head;
-          setHTML(c, html + (ctx.size === 'm' && r?.pts?.length > 2 ? socPathSVG(r.pts, 'var(--bat)') : '') + (ctx.size === 'm' ? est : ''));
+          // markierte Stelle: Ende der Kurve (voll, leer, Sonne übernimmt) oder der Tiefpunkt
+          const last = r?.pts?.at(-1);
+          const mark = !r || !last ? null : r.mode === 'charge' && !r.full ? { t: r.peak.t, v: r.peak.soc, label: `${f0.format(r.peak.soc)} %` }
+            : { t: last[0], v: last[1], label: `${f0.format(last[1])} %` };
+          setHTML(c, html + (ctx.size === 'm' && r?.pts?.length > 2 ? socChart(r.pts, mark) : '') + (ctx.size === 'm' ? est : ''));
         };
         ctx.refresh = async () => { [fc, prof] = await Promise.all([getForecast(), getProfile().catch(() => null)]); ctx.update(); };
         ctx.update(); ctx.refresh();
@@ -1079,7 +1089,7 @@
     const consF = (min) => prof.slots[Math.floor((min % 1440) / 15)] || prof.base || 300;
     const dPv = (live.pv || 0) - pvF(m0), dCons = (live.cons || 0) - consF(m0);
     const mode = b.charge > 15 ? 'charge' : b.discharge > 15 ? 'discharge' : b.soc >= 99 ? 'full' : 'idle';
-    let soc = b.soc, peak = { soc, t: 0 };
+    let soc = b.soc, peak = { soc, t: 0 }, fullUntil = null, low2 = { soc, t: 0 };
     const pts = [[0, soc]];
     for (let t = 5; t <= 36 * 60; t += 5) {
       const mm = m0 + t, pv = Math.max(0, pvF(mm) + dPv * Math.exp(-t / 45)), cons = Math.max(80, consF(mm) + dCons * Math.exp(-t / 40));
@@ -1094,19 +1104,35 @@
       } else if (mode === 'discharge') {
         if (soc <= low + 0.3) return { mode, empty: true, at: t, pts, low, cap, inPct };
         if (net > 150 && t > 20) return { mode, empty: false, at: t, soc, pts, low, cap, inPct }; // die Sonne übernimmt vorher
+      } else {
+        // voll oder ruhend: ab wann nicht mehr voll, und der Tiefpunkt, bevor die Sonne wieder lädt
+        if (fullUntil == null && soc < 98.5) fullUntil = t;
+        if (soc < low2.soc) low2 = { soc, t };
+        if (low2.t && soc > low2.soc + 1) return { mode, fullUntil, lowest: low2, pts: pts.slice(0, low2.t / 5 + 1), low, cap, inPct };
       }
     }
-    return { mode, open: true, pts, low, cap, inPct };
+    return { mode, open: true, fullUntil, lowest: low2.t ? low2 : null, pts, low, cap, inPct };
   }
   const clockIn = (min) => { const d = new Date(Date.now() + min * 60e3); return `${String(d.getHours()).padStart(2, '0')}:${String(Math.round(d.getMinutes() / 5) * 5 % 60).padStart(2, '0')}`; };
   const durText = (min) => min >= 60 ? `${Math.floor(min / 60)} h${min % 60 >= 5 ? ` ${Math.round(min % 60 / 5) * 5} min` : ''}` : `${Math.max(5, Math.round(min / 5) * 5)} min`;
-  // kleiner Verlauf des vorausgerechneten Ladezustands (0–100 %), Start links
-  const socPathSVG = (pts, color) => {
-    const T = pts.at(-1)[0] || 1, W = 192, H = 44;
-    const xy = pts.map(([t, v]) => `${(t / T * W).toFixed(1)},${(H - 2 - v / 100 * (H - 4)).toFixed(1)}`);
-    return `<svg class="mw-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><polygon points="0,${H} ${xy.join(' ')} ${W},${H}" fill="${color}" fill-opacity=".22"/>`
-      + `<polyline points="${xy.join(' ')}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>`;
-  };
+  // Verlauf des vorausgerechneten Ladezustands (0–100 %) mit Zeitachse: links "jetzt", dazu die vollen Stunden 0, 6, 12, 18;
+  // ein Punkt mit Prozentwert markiert die Stelle, um die es geht (voll, leer, Tiefpunkt)
+  function socChart(pts, mark) {
+    const T = Math.max(5, pts.at(-1)[0]) * 1.05, W = 192, H = 44, // rechts etwas Luft für Punkt und Wert
+      X = (t) => t / T * 100, Yp = (v) => (H - 2 - v / 100 * (H - 4)) / H * 100;
+    const xy = pts.map(([t, v]) => `${(t / T * W).toFixed(1)},${(Yp(v) * H / 100).toFixed(1)}`);
+    const now = new Date(), m0 = now.getHours() * 60 + now.getMinutes(), ticks = [];
+    for (let t = (360 - m0 % 360) % 360 || 360; t < T; t += 360) { const x = X(t); if (x > 14 && x < 92) ticks.push([x, `${((m0 + t) / 60 % 24).toFixed(0)} Uhr`]); }
+    let m = '';
+    if (mark) {
+      const x = X(mark.t), y = Yp(mark.v), side = x > 78 ? ' end' : x < 18 ? ' start' : '';
+      m = `<i class="soc-dot" style="left:${x.toFixed(1)}%;top:${y.toFixed(1)}%"></i><span class="soc-lbl${side}${y < 35 ? ' below' : ''}" style="left:${x.toFixed(1)}%;top:${y.toFixed(1)}%">${mark.label}</span>`;
+    }
+    return `<div class="soc-ch"><div class="soc-plot"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">`
+      + `<polygon points="0,${H} ${xy.join(' ')} ${xy.at(-1).split(',')[0]},${H}" fill="var(--bat)" fill-opacity=".22"/>`
+      + `<polyline points="${xy.join(' ')}" fill="none" stroke="var(--bat)" stroke-width="1.8" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>${m}</div>`
+      + `<div class="soc-ax"><span class="start" style="left:0">jetzt</span>${ticks.map(([x, l]) => `<span style="left:${x.toFixed(1)}%">${l}</span>`).join('')}</div></div>`;
+  }
   const getRange = (from, to) => cached(`range${from}${to}`, 30 * 60000, () => api(`/api/daysrange?from=${from}&to=${to}`));
   const getYears = () => cached('years', 30 * 60000, () => api('/api/years'));
   const sumOf = (arr, k) => arr.reduce((a, d) => a + (d?.[k] || 0), 0);

@@ -1011,3 +1011,17 @@ body.house-focus .board > .wi:not(.focus) { transition-duration: .8s; }
 .ty-p { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; }
 .ty-p b { font-weight: 600; }
 .ty-p span { color: var(--muted); }
+
+/* Akku-Prognose: Kurve mit Zeitachse und Markierung */
+.soc-ch { margin-top: 8px; }
+.soc-plot { position: relative; height: 44px; }
+.soc-plot svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.soc-dot { position: absolute; width: 7px; height: 7px; border-radius: 50%; background: var(--bat); box-shadow: 0 0 0 2px var(--surface-solid, #1a1d2b); transform: translate(-50%, -50%); }
+.soc-lbl { position: absolute; transform: translate(-50%, calc(-100% - 6px)); font: 600 11px var(--text); color: var(--ink); white-space: nowrap; }
+.soc-lbl.below { transform: translate(-50%, 6px); }
+.soc-lbl.end { transform: translate(calc(-100% + 3px), calc(-100% - 7px)); }
+.soc-lbl.end.below { transform: translate(calc(-100% + 3px), 7px); }
+.soc-lbl.start { transform: translate(-4px, calc(-100% - 6px)); }
+.soc-ax { position: relative; height: 14px; margin-top: 3px; }
+.soc-ax span { position: absolute; transform: translateX(-50%); font: 500 10px var(--text); color: var(--muted); white-space: nowrap; }
+.soc-ax span.start { transform: none; }
