@@ -91,6 +91,15 @@ Eigenverbrauch, Einspeisung und Netzbezug gibt es nur für Tage, an denen das Da
 `/api/days?n=30`, `/api/heatmap?days=90`, `/api/years`, `/api/forecast`, `/api/settings` (GET/PUT)
 `/api/profile` (typischer Tag und Akku-Modell), `/api/daysrange?from=…&to=…`
 
+## Push-Mitteilungen
+Das Dashboard schickt Mitteilungen selbst (Web Push), ohne zusätzliche App oder fremden Dienst: Störung des Solar-Logs,
+Akku voll, Ausblick auf morgen. Antippen öffnet das Dashboard an der passenden Stelle. Einschalten in den Einstellungen
+unter **Mitteilungen → Auf diesem Gerät erlauben**, für jedes Gerät einzeln.
+
+Voraussetzungen: HTTPS (z. B. `tailscale serve`) und auf dem iPhone die App auf dem Home-Bildschirm (ab iOS 16.4).
+Der Server verschlüsselt jede Nachricht für das jeweilige Gerät (RFC 8291) und erzeugt beim ersten Start sein eigenes
+Schlüsselpaar (VAPID). Optional `PUSH_CONTACT=mailto:…` als Kontaktangabe für die Push-Dienste setzen.
+
 ## Umzug auf einen Ubuntu-Server
 Die Datenbank (`data/solar.db`) ist nicht im Repository: Sie enthält alle Messwerte, das Layout und die Einstellungen
 samt Standort. Sie wird einmal separat kopiert.

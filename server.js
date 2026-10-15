@@ -8,6 +8,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import crypto from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const env = process.env;
@@ -19,6 +20,7 @@ const CFG = {
   dbPath: env.DB_PATH || path.join(__dirname, 'data', 'solar.db'),
   tz: env.TZ || 'Europe/Zurich',
   demo: env.DEMO === '1',
+  pushContact: env.PUSH_CONTACT || 'mailto:solar-dashboard@example.com', // Absenderangabe für die Push-Dienste (VAPID)
 };
 
 // Standard-Einstellungen (im Dashboard änderbar)
@@ -36,6 +38,8 @@ const DEFAULT_SETTINGS = {
   batteryCapacity: Number(env.BATTERY_KWH || 0), // kWh, 0 = unbekannt
   // Ertragsprognose: ohne Standort aus, dann gibt es keine Anfragen nach aussen
   location: '', lat: null, lon: null, placeLabel: '',
+  // Push-Mitteilungen (gehen nur an Geräte, die sie in den Einstellungen erlaubt haben)
+  pushOutage: true, pushFull: true, pushEvening: true, pushEveningTime: '19:00',
   pvTilt: 30, pvOrientation: '180',
 };
 
@@ -873,6 +877,8 @@ function cleanSettings(s) {
   out.tariffFeed = n(s.tariffFeed, 0, 5, settings.tariffFeed);
   if (typeof s.tariffAuto === 'boolean') out.tariffAuto = s.tariffAuto;
   if (TARIFF_CATS.includes(s.tariffCategory)) out.tariffCategory = s.tariffCategory;
+  for (const k of ['pushOutage', 'pushFull', 'pushEvening']) if (typeof s[k] === 'boolean') out[k] = s[k];
+  if (/^\d{2}:\d{2}$/.test(s.pushEveningTime || '')) out.pushEveningTime = s.pushEveningTime;
   out.specificTarget = n(s.specificTarget, 100, 3000, settings.specificTarget);
   out.inverterCount = Math.round(n(s.inverterCount, 1, 10, settings.inverterCount));
   out.batteryCapacity = n(s.batteryCapacity, 0, 500, settings.batteryCapacity || 0);
@@ -1006,6 +1012,113 @@ function apiForecast() {
   const current = c ? { temp: c.temperature_2m, code: c.weather_code, isDay: !!c.is_day, cloud: c.cloud_cover, precip: c.precipitation, snow: c.snow_depth ?? null, text: weatherText(c.weather_code) } : null;
   return { enabled: true, place: settings.placeLabel, updated: fc.fetched, factor: Math.round(factor * 100) / 100, calDays, today, tomorrow: addDays(today, 1), days: out, current, error: fcError };
 }
+
+// ---------- Push-Mitteilungen (Web Push, ohne fremde Dienste) ----------
+// Die App auf dem Homescreen meldet ein Abo an: eine Adresse beim Push-Dienst des Geräts (Apple, Google, Mozilla) und
+// zwei Schlüssel. Der Server verschlüsselt jede Nachricht nur für dieses Gerät (RFC 8291, aes128gcm) und weist sich mit
+// einem eigenen Schlüsselpaar aus (VAPID, RFC 8292). Der Push-Dienst sieht nur verschlüsselte Daten.
+const b64u = (buf) => Buffer.from(buf).toString('base64url');
+const fromB64u = (s) => Buffer.from(String(s), 'base64url');
+function vapidKeys() {
+  let v = meta('vapid', null);
+  if (!v) {
+    const { privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const jwk = privateKey.export({ format: 'jwk' });
+    v = { jwk, pub: b64u(Buffer.concat([Buffer.from([4]), fromB64u(jwk.x), fromB64u(jwk.y)])) }; // unkomprimierter Punkt, 65 Bytes
+    setMeta('vapid', v);
+  }
+  return v;
+}
+function vapidAuth(endpoint) {
+  const v = vapidKeys();
+  const head = b64u(JSON.stringify({ typ: 'JWT', alg: 'ES256' }));
+  const body = b64u(JSON.stringify({ aud: new URL(endpoint).origin, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: CFG.pushContact }));
+  const sig = crypto.sign('sha256', Buffer.from(`${head}.${body}`), { key: crypto.createPrivateKey({ key: v.jwk, format: 'jwk' }), dsaEncoding: 'ieee-p1363' });
+  return `vapid t=${head}.${body}.${b64u(sig)}, k=${v.pub}`;
+}
+// Inhalt für ein Gerät verschlüsseln (RFC 8291). test: feste Schlüssel und Salz fürs Prüfen gegen das Beispiel im Standard
+function encryptPush(keys, payload, test = {}) {
+  const uaPub = fromB64u(keys.p256dh), authSecret = fromB64u(keys.auth);
+  const ecdh = crypto.createECDH('prime256v1');
+  if (test.priv) ecdh.setPrivateKey(fromB64u(test.priv)); else ecdh.generateKeys();
+  const asPub = ecdh.getPublicKey(), secret = ecdh.computeSecret(uaPub);
+  const hmac = (key, data) => crypto.createHmac('sha256', key).update(data).digest();
+  const ikm = hmac(hmac(authSecret, secret), Buffer.concat([Buffer.from('WebPush: info\0'), uaPub, asPub, Buffer.from([1])]));
+  const salt = test.salt ? fromB64u(test.salt) : crypto.randomBytes(16), prk = hmac(salt, ikm);
+  const cek = hmac(prk, Buffer.from('Content-Encoding: aes128gcm\0\x01')).subarray(0, 16);
+  const nonce = hmac(prk, Buffer.from('Content-Encoding: nonce\0\x01')).subarray(0, 12);
+  const c = crypto.createCipheriv('aes-128-gcm', cek, nonce);
+  const ct = Buffer.concat([c.update(Buffer.concat([Buffer.from(payload), Buffer.from([2])])), c.final(), c.getAuthTag()]);
+  const rs = Buffer.alloc(4); rs.writeUInt32BE(4096);
+  return Buffer.concat([salt, rs, Buffer.from([asPub.length]), asPub, ct]);
+}
+async function pushTo(sub, msg) {
+  const r = await fetch(sub.endpoint, {
+    method: 'POST', body: encryptPush(sub.keys, JSON.stringify(msg)), signal: AbortSignal.timeout(15000),
+    headers: { 'Content-Encoding': 'aes128gcm', 'Content-Type': 'application/octet-stream', TTL: '86400', Urgency: msg.urgent ? 'high' : 'normal', Authorization: vapidAuth(sub.endpoint) },
+  });
+  return { status: r.status, text: r.ok ? '' : (await r.text().catch(() => '')).slice(0, 200) };
+}
+// an alle angemeldeten Geräte; abgelaufene Abos (404/410) fallen weg
+async function pushAll(msg) {
+  const subs = meta('pushSubs', []), keep = [];
+  let sent = 0, error = null;
+  for (const s of subs) {
+    try {
+      const r = await pushTo(s, msg);
+      if (r.status === 404 || r.status === 410) continue;
+      keep.push(s);
+      if (r.status >= 200 && r.status < 300) sent++;
+      else { error = `${new URL(s.endpoint).host}: HTTP ${r.status} ${r.text}`; console.error(new Date().toISOString(), 'Push:', error); }
+    } catch (e) { keep.push(s); error = e.message; console.error(new Date().toISOString(), 'Push:', e.message); }
+  }
+  if (keep.length !== subs.length) setMeta('pushSubs', keep);
+  return { sent, total: subs.length, error };
+}
+const notifyState = meta('notifyState', {});
+const markSent = (k, v) => { notifyState[k] = v; setMeta('notifyState', notifyState); };
+const clockOf = (ts) => new Intl.DateTimeFormat('de-CH', { timeZone: CFG.tz, hour: '2-digit', minute: '2-digit' }).format(ts);
+const kwh1 = (wh) => (wh / 1000).toLocaleString('de-CH', { maximumFractionDigits: 1, minimumFractionDigits: 1 });
+// bestes Zeitfenster für ein Gerät mit 2 kW bei 0.45 kW Grundlast (wie im Widget "Bestes Zeitfenster")
+function windowText(d) {
+  let best = null, cur = -1;
+  d.hours.forEach((w, h) => { if (w / 1000 - 0.45 >= 2) { if (cur < 0) cur = h; if (!best || h - cur > best[1] - best[0]) best = [cur, h]; } else cur = -1; });
+  return best ? `${best[0]}–${best[1] + 1} Uhr` : null;
+}
+let belowDay = null; // Tag, an dem der Akku unter 95 % war (erst danach zählt "voll")
+async function notifyTick() {
+  const s = settings;
+  if (CFG.demo || !meta('pushSubs', []).length) return;
+  const now = Date.now(), day = dayKey(now), hm = clockOf(now);
+  try {
+    if (s.pushOutage && lastOk) {
+      const down = now - lastOk > 15 * 60e3;
+      if (down && !notifyState.outage) {
+        markSent('outage', now);
+        await pushAll({ title: 'Solar-Log antwortet nicht', body: `Seit ${clockOf(lastOk)} keine Daten.${lastError ? ` ${lastError}.` : ''}`, url: './', tag: 'outage', urgent: true });
+      } else if (!down && notifyState.outage) {
+        markSent('outage', 0);
+        await pushAll({ title: 'Solar-Log wieder erreichbar', body: 'Die Daten kommen wieder, Lücken werden aus der Tageskurve ergänzt.', url: './?tab=day&w=day', tag: 'outage' });
+      }
+    }
+    const b = live.bat;
+    if (b && b.soc < 95) belowDay = day;
+    if (s.pushFull && b && b.soc >= 99 && belowDay === day && notifyState.fullDay !== day) {
+      markSent('fullDay', day);
+      await pushAll({ title: 'Akku voll', body: `Der Akku ist um ${hm} voll geladen.`, url: './?tab=day&w=battery', tag: 'battery' });
+    }
+    if (s.pushEvening && hm >= (s.pushEveningTime || '19:00') && notifyState.eveningDay !== day) {
+      markSent('eveningDay', day);
+      const f = apiForecast(), m = f?.days?.[f.tomorrow];
+      if (m) {
+        const w = windowText(m);
+        await pushAll({ title: `Morgen ca. ${kwh1(m.wh)} kWh`, body: [m.weather, w ? `Gutes Zeitfenster für grosse Geräte: ${w}` : 'Kaum Überschuss für grosse Geräte.'].filter(Boolean).join(' · '),
+          url: './?tab=now', tag: 'evening' });
+      }
+    }
+  } catch (e) { console.error(new Date().toISOString(), 'Mitteilungen:', e.message); }
+}
+setInterval(notifyTick, 60e3);
 
 // ---------- Typischer Tag und Akku-Modell ----------
 // Aus den Messpunkten der letzten 3 Wochen: Verbrauch pro Viertelstunde als Median über die Tage (Spitzen, die fast
@@ -1151,6 +1264,25 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/years') return json(apiYearsMonths());
     if (p === '/api/forecast') return json(apiForecast());
     if (p === '/api/profile') return json(apiProfile());
+    if (p === '/api/push/key') return json({ key: vapidKeys().pub });
+    if (p === '/api/push/subscribe' && req.method === 'POST') {
+      const b = await readBody(req), ep = String(b.endpoint || '');
+      if (!/^https:\/\//.test(ep) || !b.keys?.p256dh || !b.keys?.auth) return json({ error: 'Ungültiges Abo.' }, 400);
+      const subs = meta('pushSubs', []).filter((x) => x.endpoint !== ep);
+      subs.push({ endpoint: ep, keys: { p256dh: String(b.keys.p256dh), auth: String(b.keys.auth) }, created: Date.now(), ua: String(req.headers['user-agent'] || '').slice(0, 120) });
+      setMeta('pushSubs', subs.slice(-10));
+      return json({ ok: true, total: Math.min(10, subs.length) });
+    }
+    if (p === '/api/push/unsubscribe' && req.method === 'POST') {
+      const ep = String((await readBody(req)).endpoint || '');
+      setMeta('pushSubs', meta('pushSubs', []).filter((x) => x.endpoint !== ep));
+      return json({ ok: true });
+    }
+    if (p === '/api/push/test' && req.method === 'POST') {
+      const pvTxt = live.pv < 1000 ? `${Math.round(live.pv)} W` : `${(live.pv / 1000).toFixed(2)} kW`;
+      const r = await pushAll({ title: 'Test vom Solar-Dashboard', body: `So sehen Mitteilungen aus. Solar gerade ${pvTxt}. Antippen öffnet das Dashboard.`, url: './?tab=now', tag: 'test' });
+      return json(r, r.sent ? 200 : 422);
+    }
     // 3D-Haus: getrennt von den Einstellungen gespeichert, damit /api/state klein bleibt
     if (p === '/api/daysrange') { // Tage eines Zeitraums, z. B. für den Jahresrückblick
       const ok = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '');

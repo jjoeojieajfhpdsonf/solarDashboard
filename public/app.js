@@ -3021,6 +3021,9 @@
     form.elements.tariffAuto.value = s.tariffAuto === false ? '0' : '1';
     form.elements.tariffCategory.value = s.tariffCategory || 'H5';
     tariffForm();
+    for (const k of ['pushOutage', 'pushFull', 'pushEvening']) form.elements[k].value = s[k] === false ? '0' : '1';
+    form.elements.pushEveningTime.value = s.pushEveningTime || '19:00';
+    pushUI();
     form.elements.pvTilt.value = s.pvTilt ?? 30;
     form.elements.pvOrientation.value = s.pvOrientation || '180';
     $('fcHint').textContent = (s.lat != null ? `Gefunden: ${s.placeLabel} (${f2.format(s.lat)}, ${f2.format(s.lon)}). ` : '')
@@ -3044,6 +3047,58 @@
         + (i.error ? ` Letzte Aktualisierung fehlgeschlagen: ${i.error}` : '')
       : i?.error || 'Der Preis wird geladen.';
   }
+  // Push-Mitteilungen: dieses Gerät an- oder abmelden, Testmitteilung. Geht auf dem iPhone nur in der App auf dem
+  // Homescreen (ab iOS 16.4) und nur über HTTPS.
+  const pushOk = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && window.isSecureContext;
+  let pushSub = null; // Abo dieses Geräts, beim Öffnen der Einstellungen ermittelt
+  const ownSub = async () => (pushOk() ? (await navigator.serviceWorker.getRegistration())?.pushManager.getSubscription() : null);
+  async function pushUI() {
+    const btn = $('btnPush'), test = $('btnPushTest'), hint = $('pushHint');
+    if (!pushOk()) {
+      btn.disabled = test.disabled = true;
+      const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+      hint.textContent = !window.isSecureContext ? 'Mitteilungen brauchen die HTTPS-Adresse (Tailscale), nicht http://.'
+        : !standalone && /iPhone|iPad/.test(navigator.userAgent) ? 'Auf dem iPhone gehen Mitteilungen nur in der App auf dem Home-Bildschirm: in Safari Teilen → Zum Home-Bildschirm, dann dort öffnen.'
+          : 'Dieser Browser unterstützt keine Push-Mitteilungen.';
+      return;
+    }
+    const sub = pushSub = await ownSub().catch(() => null), denied = Notification.permission === 'denied';
+    btn.disabled = denied; test.disabled = !sub;
+    btn.textContent = sub ? 'Auf diesem Gerät ausschalten' : 'Auf diesem Gerät erlauben';
+    hint.textContent = denied ? 'Mitteilungen sind für diese App blockiert. Erlauben in den iPhone-Einstellungen → Mitteilungen → Solar.'
+      : sub ? 'Dieses Gerät bekommt Mitteilungen. Antippen öffnet das Dashboard an der passenden Stelle.'
+        : 'Mitteilungen kommen vom Dashboard selbst, ohne zusätzliche App. Gilt für jedes Gerät einzeln.';
+  }
+  const keyBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+  $('btnPush').onclick = async () => {
+    const btn = $('btnPush');
+    try {
+      const cur = pushSub;
+      if (cur) {
+        await fetch('/api/push/unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: cur.endpoint }) });
+        await cur.unsubscribe();
+      } else {
+        const perm = await Notification.requestPermission(); // direkt im Antippen, sonst fragt iOS nicht
+        if (perm !== 'granted') { pushUI(); return; }
+        btn.disabled = true; btn.textContent = 'Meldet an…';
+        const reg = await navigator.serviceWorker.ready, { key } = await api('/api/push/key');
+        const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
+        const r = await fetch('/api/push/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sub.toJSON()) });
+        if (!r.ok) throw new Error('Der Server hat das Abo nicht angenommen.');
+      }
+    } catch (e) { alert(`Mitteilungen: ${e.message || e}`); }
+    pushUI();
+  };
+  $('btnPushTest').onclick = async () => {
+    const btn = $('btnPushTest'), label = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Sendet…';
+    try {
+      const r = await (await fetch('/api/push/test', { method: 'POST' })).json();
+      btn.textContent = r.sent ? `Gesendet an ${r.sent} ${r.sent === 1 ? 'Gerät' : 'Geräte'} ✓` : 'Nicht gesendet';
+      if (!r.sent) alert(`Mitteilung nicht gesendet. ${r.error || ''}`);
+    } catch { btn.textContent = 'Fehler'; }
+    setTimeout(() => { btn.disabled = false; btn.textContent = label; }, 3000);
+  };
   form.elements.tariffAuto.addEventListener('change', tariffForm);
   form.elements.tariffCategory.addEventListener('change', tariffForm);
   form.elements.inverterCount.addEventListener('input', (e) => {
@@ -3069,6 +3124,8 @@
       tariffImport: num(form.elements.tariffImport),
       tariffAuto: form.elements.tariffAuto.value === '1',
       tariffCategory: form.elements.tariffCategory.value,
+      pushOutage: form.elements.pushOutage.value === '1', pushFull: form.elements.pushFull.value === '1', pushEvening: form.elements.pushEvening.value === '1',
+      pushEveningTime: form.elements.pushEveningTime.value || undefined,
       tariffFeed: num(form.elements.tariffFeed),
       specificTarget: num(form.elements.specificTarget),
       batteryCapacity: num(form.elements.batteryCapacity),
@@ -3397,6 +3454,18 @@
     if (/^\d{4}-\d{2}$/.test(rq || '')) openReview('month', rq);
     else if (/^\d{4}$/.test(rq || '')) openReview('year', rq);
     else checkReviewBanner();
+    // Direktlink, z. B. aus einer Mitteilung: ?tab=day&w=battery öffnet den Tab und zeigt das Widget
+    const openLink = (href) => {
+      const q = new URL(href, location.href).searchParams;
+      if (q.get('w')) openDetail(q.get('tab') || 'now', q.get('w'));
+      else if (q.get('tab')) setTab(q.get('tab'));
+    };
+    if (/[?&](tab|w)=/.test(location.search)) { openLink(location.href); history.replaceState(null, '', location.pathname); }
+    // Service Worker für Push-Mitteilungen; ist die App schon offen, schickt er beim Antippen das Ziel hierher
+    if ('serviceWorker' in navigator && window.isSecureContext) {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+      navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.type === 'open') openLink(e.data.url); });
+    }
     setInterval(loadState, 5000); // Server fragt den Solar-Log ab, hier nur den letzten Stand holen
     applyDaypart(); setInterval(applyDaypart, 60000);
     setInterval(() => mounted.forEach((m) => m.ctx.refresh?.()), 5 * 60000);

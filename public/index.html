@@ -11,7 +11,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Solar iPhone">
+<meta name="apple-mobile-web-app-title" content="Solar">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <!-- Hell oder dunkel schon vor dem ersten Zeichnen, sonst blitzt beim Öffnen kurz ein weisser Hintergrund auf -->
 <style>html { background: #0A0D18; color-scheme: dark; } html.light { background: #F2F3F7; color-scheme: light; }</style>
@@ -121,6 +121,17 @@
         <label class="ios-row"><span>Rückliefervergütung</span><input name="tariffFeed" type="text" inputmode="decimal"><em>CHF/kWh</em></label>
       </div>
       <p class="ios-foot" id="tariffHint"></p>
+
+      <h3 class="ios-sec">Mitteilungen</h3>
+      <div class="ios-group">
+        <button class="ios-row ios-action" type="button" id="btnPush">Auf diesem Gerät erlauben</button>
+        <label class="ios-row"><span>Störung Solar-Log</span><select name="pushOutage"><option value="1">Ein</option><option value="0">Aus</option></select></label>
+        <label class="ios-row"><span>Akku voll</span><select name="pushFull"><option value="1">Ein</option><option value="0">Aus</option></select></label>
+        <label class="ios-row"><span>Ausblick auf morgen</span><select name="pushEvening"><option value="1">Ein</option><option value="0">Aus</option></select></label>
+        <label class="ios-row"><span>Ausblick um</span><input name="pushEveningTime" type="time"></label>
+        <button class="ios-row ios-action" type="button" id="btnPushTest">Testmitteilung senden</button>
+      </div>
+      <p class="ios-foot" id="pushHint"></p>
 
       <h3 class="ios-sec">Soll-Ertrag</h3>
       <div class="ios-group">

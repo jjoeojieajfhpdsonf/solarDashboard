@@ -1,6 +1,6 @@
 {
-  "name": "Solaranlage (iPhone)",
-  "short_name": "Solar iPhone",
+  "name": "Solaranlage",
+  "short_name": "Solar",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
