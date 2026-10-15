@@ -1079,11 +1079,22 @@ const notifyState = meta('notifyState', {});
 const markSent = (k, v) => { notifyState[k] = v; setMeta('notifyState', notifyState); };
 const clockOf = (ts) => new Intl.DateTimeFormat('de-CH', { timeZone: CFG.tz, hour: '2-digit', minute: '2-digit' }).format(ts);
 const kwh1 = (wh) => (wh / 1000).toLocaleString('de-CH', { maximumFractionDigits: 1, minimumFractionDigits: 1 });
-// bestes Zeitfenster für ein Gerät mit 2 kW bei 0.45 kW Grundlast (wie im Widget "Bestes Zeitfenster")
-function windowText(d) {
-  let best = null, cur = -1;
-  d.hours.forEach((w, h) => { if (w / 1000 - 0.45 >= 2) { if (cur < 0) cur = h; if (!best || h - cur > best[1] - best[0]) best = [cur, h]; } else cur = -1; });
-  return best ? `${best[0]}–${best[1] + 1} Uhr` : null;
+// Tagesbilanz für die Abend-Mitteilung: Produktion (mit Soll), Verbrauch, selbst versorgt, Einspeisung, Wert in CHF
+function daySummary(day) {
+  const t = enrichDay(q.day.get(day));
+  if (!t?.yieldWh && !t?.consWh) return null;
+  const [y, m, d] = day.split('-').map(Number), dim = new Date(y, m, 0).getDate(), target = monthTargetWh(y, m);
+  const pctSoll = target && t.yieldWh != null ? Math.round(t.yieldWh / (target / dim) * 100) : null;
+  const parts = [];
+  if (t.consWh) parts.push(`${kwh1(t.consWh)} kWh verbraucht${t.coveredWh != null ? `, ${Math.round(t.coveredWh / t.consWh * 100)} % selbst versorgt` : ''}.`);
+  if (t.feedWh != null) parts.push(`${kwh1(t.feedWh)} kWh eingespeist.`);
+  if (t.coveredWh != null && t.feedWh != null) {
+    const imp = settings.tariffByYear?.[String(y)] ?? settings.tariffImport;
+    const chf = (t.coveredWh * imp + t.feedWh * settings.tariffFeed) / 1000;
+    parts.push(`Wert heute ca. CHF ${chf.toFixed(2)}.`);
+  }
+  return { title: `Heute ${kwh1(t.yieldWh || 0)} kWh produziert${pctSoll != null ? ` · ${pctSoll} % vom Soll` : ''}`, body: parts.join(' '),
+    url: './?tab=day&w=sankey', tag: 'evening' };
 }
 let belowDay = null; // Tag, an dem der Akku unter 95 % war (erst danach zählt "voll")
 // Eine Mitteilung gilt erst als erledigt, wenn sie mindestens ein Gerät erreicht hat. Sonst nächste Minute nochmals,
@@ -1114,17 +1125,11 @@ async function notifyTick() {
     if (s.pushFull && b && b.soc >= 99 && belowDay === day && notifyState.fullDay !== day) {
       await sendOnce('fullDay', day, { title: 'Akku voll', body: `Der Akku ist um ${hm} voll geladen.`, url: './?tab=day&w=battery', tag: 'battery' });
     }
-    // Ausblick: einmal pro Tag und eingestellter Uhrzeit (eine neue Uhrzeit gilt auch am selben Tag); ohne Prognose warten
+    // Tagesbilanz am Abend: einmal pro Tag und eingestellter Uhrzeit (eine neue Uhrzeit gilt auch am selben Tag)
     const at = s.pushEveningTime || '19:00', mark = `${day} ${at}`;
     if (s.pushEvening && hm >= at && notifyState.eveningDay !== mark) {
-      const f = apiForecast(), m = f?.days?.[f.tomorrow];
-      if (!m) { if (!tries.noForecast) console.error(new Date().toISOString(), 'Ausblick wartet: noch keine Prognose für morgen', f?.error || ''); tries.noForecast = 1; }
-      else {
-        delete tries.noForecast;
-        const w = windowText(m);
-        await sendOnce('eveningDay', mark, { title: `Morgen ca. ${kwh1(m.wh)} kWh`, body: [m.weather, w ? `Gutes Zeitfenster für grosse Geräte: ${w}` : 'Kaum Überschuss für grosse Geräte.'].filter(Boolean).join(' · '),
-          url: './?tab=now', tag: 'evening' });
-      }
+      const msg = daySummary(day);
+      if (msg) await sendOnce('eveningDay', mark, msg);
     }
   } catch (e) { console.error(new Date().toISOString(), 'Mitteilungen:', e.message); }
 }
