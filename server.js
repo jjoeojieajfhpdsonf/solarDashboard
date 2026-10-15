@@ -4,7 +4,7 @@
 
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync, readdirSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -1336,4 +1336,23 @@ if (!CFG.demo) { syncHistory(); setInterval(syncHistory, 6 * 3600e3); scheduleGa
 setInterval(() => q.prune.run(Date.now() - 400 * 864e5), 3600e3);
 refreshForecast(); setInterval(refreshForecast, 30 * 60e3); // Open-Meteo rechnet stündlich neu
 refreshTariff(); setInterval(refreshTariff, 6 * 3600e3);
+
+// Tägliches Backup: ab 3 Uhr nachts eine saubere Kopie der Datenbank nach data/backup/solar-JJJJ-MM-TT.db
+// (VACUUM INTO geht bei laufendem Betrieb und schreibt einen stimmigen Stand), die letzten 14 Tage bleiben.
+// Wiederherstellen: Container stoppen, gewünschte Datei als data/solar.db zurückkopieren, starten.
+const BACKUP_DIR = path.join(path.dirname(CFG.dbPath), 'backup');
+function backupDb() {
+  try {
+    const hour = Number(new Intl.DateTimeFormat('de-CH', { timeZone: CFG.tz, hour: '2-digit', hourCycle: 'h23' }).format(Date.now()));
+    if (CFG.demo || hour < 3) return;
+    mkdirSync(BACKUP_DIR, { recursive: true });
+    const file = path.join(BACKUP_DIR, `solar-${dayKey(Date.now())}.db`);
+    if (existsSync(file)) return; // heute schon gesichert
+    db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
+    const old = readdirSync(BACKUP_DIR).filter((f) => /^solar-\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort().slice(0, -14);
+    for (const f of old) unlinkSync(path.join(BACKUP_DIR, f));
+    console.log(new Date().toISOString(), `Backup: ${path.basename(file)} angelegt${old.length ? `, ${old.length} ältere entfernt` : ''}`);
+  } catch (e) { console.error(new Date().toISOString(), 'Backup:', e.message); }
+}
+setTimeout(backupDb, 2 * 60e3); setInterval(backupDb, 30 * 60e3);
 server.listen(CFG.port, () => console.log(`Solar-Dashboard läuft auf http://0.0.0.0:${CFG.port} (${CFG.demo ? 'Demo-Modus' : `Quelle ${CFG.solarlog}`})`));

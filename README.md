@@ -100,6 +100,16 @@ Voraussetzungen: HTTPS (z. B. `tailscale serve`) und auf dem iPhone die App auf 
 Der Server verschlüsselt jede Nachricht für das jeweilige Gerät (RFC 8291) und erzeugt beim ersten Start sein eigenes
 Schlüsselpaar (VAPID). Optional `PUSH_CONTACT=mailto:…` als Kontaktangabe für die Push-Dienste setzen.
 
+## Backup
+Jede Nacht ab 3 Uhr legt das Dashboard eine Kopie der Datenbank in `data/backup/` an (`solar-JJJJ-MM-TT.db`) und behält
+die letzten 14 Tage. Wiederherstellen:
+```bash
+docker compose stop
+cp data/backup/solar-2026-10-14.db data/solar.db && rm -f data/solar.db-wal data/solar.db-shm
+docker compose up -d
+```
+Die Kopien liegen auf derselben Platte: Sie schützen vor Versehen und kaputten Dateien, nicht vor einem Plattendefekt.
+
 ## Umzug auf einen Ubuntu-Server
 Die Datenbank (`data/solar.db`) ist nicht im Repository: Sie enthält alle Messwerte, das Layout und die Einstellungen
 samt Standort. Sie wird einmal separat kopiert.
