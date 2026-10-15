@@ -1025,3 +1025,7 @@ body.house-focus .board > .wi:not(.focus) { transition-duration: .8s; }
 .soc-ax { position: relative; height: 14px; margin-top: 3px; }
 .soc-ax span { position: absolute; transform: translateX(-50%); font: 500 10px var(--text); color: var(--muted); white-space: nowrap; }
 .soc-ax span.start { transform: none; }
+/* Bearbeiten: grosse Diagramm-Widgets mit fester Höhe. Sonst richtet sich das Diagramm nach dem Widget und das Widget
+   nach dem Diagramm, und zwei in einer Zeile schaukeln sich endlos hoch. */
+body.editing .board.ios .wi.sz-l.detail { height: calc(var(--cell, 160px) * 2 + 16px); }
+body.editing .board.ios .wi.sz-l.detail .w { height: 100%; }
