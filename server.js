@@ -39,7 +39,7 @@ const DEFAULT_SETTINGS = {
   // Ertragsprognose: ohne Standort aus, dann gibt es keine Anfragen nach aussen
   location: '', lat: null, lon: null, placeLabel: '',
   // Push-Mitteilungen (gehen nur an Geräte, die sie in den Einstellungen erlaubt haben)
-  pushOutage: true, pushFull: true, pushEvening: true, pushEveningTime: '19:00',
+  pushOutage: true, pushFull: true, pushEvening: true, pushEveningTime: '19:00', pushMonth: true,
   pvTilt: 30, pvOrientation: '180',
 };
 
@@ -877,7 +877,7 @@ function cleanSettings(s) {
   out.tariffFeed = n(s.tariffFeed, 0, 5, settings.tariffFeed);
   if (typeof s.tariffAuto === 'boolean') out.tariffAuto = s.tariffAuto;
   if (TARIFF_CATS.includes(s.tariffCategory)) out.tariffCategory = s.tariffCategory;
-  for (const k of ['pushOutage', 'pushFull', 'pushEvening']) if (typeof s[k] === 'boolean') out[k] = s[k];
+  for (const k of ['pushOutage', 'pushFull', 'pushEvening', 'pushMonth']) if (typeof s[k] === 'boolean') out[k] = s[k];
   if (/^\d{2}:\d{2}$/.test(s.pushEveningTime || '')) out.pushEveningTime = s.pushEveningTime;
   out.specificTarget = n(s.specificTarget, 100, 3000, settings.specificTarget);
   out.inverterCount = Math.round(n(s.inverterCount, 1, 10, settings.inverterCount));
@@ -1096,6 +1096,22 @@ function daySummary(day) {
   return { title: `Heute ${kwh1(t.yieldWh || 0)} kWh produziert${pctSoll != null ? ` · ${pctSoll} % vom Soll` : ''}`, body: parts.join(' '),
     url: './?tab=day&w=sankey', tag: 'evening' };
 }
+// Rückblick-Mitteilung für einen Monat (JJJJ-MM) oder ein Jahr (JJJJ): Ertrag gegen Soll, selbst versorgt
+const MONTH_NAMES = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+function reviewMsg(ref) {
+  const year = ref.length === 4, y = Number(ref.slice(0, 4)), m = year ? 0 : Number(ref.slice(5, 7));
+  const from = year ? `${y}-01-01` : `${ref}-01`, to = year ? `${y}-12-31` : `${ref}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`;
+  const days = q.daysRange.all(from, to).map(enrichDay);
+  if (days.filter((d) => d.yieldWh).length < (year ? 30 : 5)) return null;
+  const sum = (k, arr = days) => arr.reduce((a, d) => a + (d[k] || 0), 0);
+  const yieldWh = sum('yieldWh'), target = year ? Array.from({ length: 12 }, (_, i) => monthTargetWh(y, i + 1) || 0).reduce((a, b) => a + b, 0) : monthTargetWh(y, m);
+  const meas = days.filter((d) => d.coveredWh != null && d.consWh);
+  const parts = [`${Math.round(yieldWh / 1000).toLocaleString('de-CH')} kWh`];
+  if (target) { const dv = Math.round((yieldWh / target - 1) * 100); parts.push(dv === 0 ? 'genau im Soll' : `${Math.abs(dv)} % ${dv > 0 ? 'über' : 'unter'} Soll`); }
+  if (meas.length) parts.push(`${Math.round(sum('coveredWh', meas) / sum('consWh', meas) * 100)} % selbst versorgt`);
+  return { title: year ? `Dein Solarjahr ${y} ist da` : `Dein ${MONTH_NAMES[m - 1]}-Rückblick ist da`, body: `${parts.join(', ')}. Antippen für den ganzen Rückblick.`,
+    url: `./?rueckblick=${ref}`, tag: `review-${ref}` };
+}
 let belowDay = null; // Tag, an dem der Akku unter 95 % war (erst danach zählt "voll")
 // Eine Mitteilung gilt erst als erledigt, wenn sie mindestens ein Gerät erreicht hat. Sonst nächste Minute nochmals,
 // nach 5 Fehlversuchen wird aufgegeben (bis zum nächsten Anlass), damit nichts endlos versucht wird.
@@ -1124,6 +1140,15 @@ async function notifyTick() {
     if (b && b.soc < 95) belowDay = day;
     if (s.pushFull && b && b.soc >= 99 && belowDay === day && notifyState.fullDay !== day) {
       await sendOnce('fullDay', day, { title: 'Akku voll', body: `Der Akku ist um ${hm} voll geladen.`, url: './?tab=day&w=battery', tag: 'battery' });
+    }
+    // Rückblick am 1. des Monats ab 09:00 (am 1. Januar zusätzlich das Jahr); Antippen öffnet ihn direkt
+    if (s.pushMonth && day.slice(8) === '01' && hm >= '09:00') {
+      const [y, m] = day.split('-').map(Number), prev = m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
+      for (const ref of m === 1 ? [String(y - 1), prev] : [prev]) {
+        if (notifyState[`review-${ref}`]) continue;
+        const msg = reviewMsg(ref);
+        if (msg) await sendOnce(`review-${ref}`, day, msg); else markSent(`review-${ref}`, day);
+      }
     }
     // Tagesbilanz am Abend: einmal pro Tag und eingestellter Uhrzeit (eine neue Uhrzeit gilt auch am selben Tag)
     const at = s.pushEveningTime || '19:00', mark = `${day} ${at}`;

@@ -3021,7 +3021,7 @@
     form.elements.tariffAuto.value = s.tariffAuto === false ? '0' : '1';
     form.elements.tariffCategory.value = s.tariffCategory || 'H5';
     tariffForm();
-    for (const k of ['pushOutage', 'pushFull', 'pushEvening']) form.elements[k].value = s[k] === false ? '0' : '1';
+    for (const k of ['pushOutage', 'pushFull', 'pushEvening', 'pushMonth']) form.elements[k].value = s[k] === false ? '0' : '1';
     form.elements.pushEveningTime.value = s.pushEveningTime || '19:00';
     pushUI();
     form.elements.pvTilt.value = s.pvTilt ?? 30;
@@ -3138,7 +3138,7 @@
       tariffImport: num(form.elements.tariffImport),
       tariffAuto: form.elements.tariffAuto.value === '1',
       tariffCategory: form.elements.tariffCategory.value,
-      pushOutage: form.elements.pushOutage.value === '1', pushFull: form.elements.pushFull.value === '1', pushEvening: form.elements.pushEvening.value === '1',
+      pushOutage: form.elements.pushOutage.value === '1', pushFull: form.elements.pushFull.value === '1', pushEvening: form.elements.pushEvening.value === '1', pushMonth: form.elements.pushMonth.value === '1',
       pushEveningTime: form.elements.pushEveningTime.value || undefined,
       tariffFeed: num(form.elements.tariffFeed),
       specificTarget: num(form.elements.specificTarget),
@@ -3414,8 +3414,11 @@
   $('rvCard').addEventListener('click', (e) => { const r = e.currentTarget.getBoundingClientRect(); rvGo(e.clientX - r.left < r.width / 3 ? -1 : 1); });
   $('rvClose').onclick = () => $('rv').close();
   $('rv').addEventListener('keydown', (e) => { if (e.key === 'ArrowRight') rvGo(1); if (e.key === 'ArrowLeft') rvGo(-1); });
-  // Hinweis in der ersten Woche eines neuen Monats (im Januar zusätzlich das Jahr), bis er angesehen oder weggeklickt wurde
+  // In der ersten Woche eines neuen Monats: beim ersten Öffnen auf diesem Gerät den Rückblick direkt zeigen (im Januar das
+  // Jahr); was danach noch offen ist, steht als Hinweisbalken oben, bis es angesehen oder weggeklickt wurde.
+  // Jedes Gerät merkt sich selbst, was es schon gezeigt hat.
   async function checkReviewBanner() {
+    let autoOpened = !!document.querySelector('dialog[open]');
     const today = state?.today?.day;
     if (!today || Number(today.slice(8)) > 7) return;
     const prev = shiftRef('month', today.slice(0, 7), -1);
@@ -3424,6 +3427,7 @@
       try { if (localStorage.getItem(`solar.review.${period}-${ref}`)) continue; } catch { /* egal */ }
       const s = await api(`/api/series?period=${period}&ref=${ref}`).catch(() => null);
       if (!s || s.buckets.filter((b) => b.yieldWh).length < (period === 'year' ? 1 : 5)) continue;
+      if (!autoOpened) { autoOpened = true; openReview(period, ref); continue; }
       const b = $('rvBanner');
       b.innerHTML = `<span><i aria-hidden="true">✦</i> ${text}</span><button class="btn primary" type="button" data-a="open">Ansehen</button><button class="btn" type="button" data-a="dismiss" aria-label="Ausblenden">✕</button>`;
       b.onclick = (e) => {
@@ -3471,10 +3475,13 @@
     // Direktlink, z. B. aus einer Mitteilung: ?tab=day&w=battery öffnet den Tab und zeigt das Widget
     const openLink = (href) => {
       const q = new URL(href, location.href).searchParams;
-      if (q.get('w')) openDetail(q.get('tab') || 'now', q.get('w'));
+      const rv2 = q.get('rueckblick') || '';
+      if (/^\d{4}(-\d{2})?$/.test(rv2)) { document.querySelectorAll('dialog[open]').forEach((d) => d.close()); openReview(rv2.length === 4 ? 'year' : 'month', rv2); }
+      else if (q.get('w')) openDetail(q.get('tab') || 'now', q.get('w'));
       else if (q.get('tab')) setTab(q.get('tab'));
     };
     if (/[?&](tab|w)=/.test(location.search)) { openLink(location.href); history.replaceState(null, '', location.pathname); }
+    if (/[?&]rueckblick=/.test(location.search)) history.replaceState(null, '', location.pathname); // nicht bei jedem Neuladen wieder öffnen
     // Service Worker für Push-Mitteilungen; ist die App schon offen, schickt er beim Antippen das Ziel hierher
     if ('serviceWorker' in navigator && window.isSecureContext) {
       navigator.serviceWorker.register('sw.js').catch(() => {});
