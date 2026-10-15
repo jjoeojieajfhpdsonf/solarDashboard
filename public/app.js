@@ -3052,6 +3052,7 @@
   const pushOk = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && window.isSecureContext;
   let pushSub = null; // Abo dieses Geräts, beim Öffnen der Einstellungen ermittelt
   const ownSub = async () => (pushOk() ? (await navigator.serviceWorker.getRegistration())?.pushManager.getSubscription() : null);
+  const keyBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
   async function pushUI() {
     const btn = $('btnPush'), test = $('btnPushTest'), hint = $('pushHint');
     if (!pushOk()) {
@@ -3062,14 +3063,27 @@
           : 'Dieser Browser unterstützt keine Push-Mitteilungen.';
       return;
     }
-    const sub = pushSub = await ownSub().catch(() => null), denied = Notification.permission === 'denied';
+    let sub = pushSub = await ownSub().catch(() => null);
+    const denied = Notification.permission === 'denied';
+    // Selbstheilung: das Abo dieses Geräts dem Server nochmals melden (z. B. nach einem Umzug der Datenbank). Hat der
+    // Server inzwischen andere Schlüssel, gilt das alte Abo nicht mehr: dann still neu anmelden (Erlaubnis besteht ja).
+    if (sub && Notification.permission === 'granted') {
+      try {
+        const { key } = await api('/api/push/key'), own = sub.options?.applicationServerKey;
+        const same = !own || btoa(String.fromCharCode(...new Uint8Array(own))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') === key;
+        if (!same) {
+          await sub.unsubscribe();
+          sub = pushSub = await (await navigator.serviceWorker.ready).pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
+        }
+        await fetch('/api/push/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sub.toJSON()) });
+      } catch { /* beim nächsten Öffnen wieder versuchen */ }
+    }
     btn.disabled = denied; test.disabled = !sub;
     btn.textContent = sub ? 'Auf diesem Gerät ausschalten' : 'Auf diesem Gerät erlauben';
     hint.textContent = denied ? 'Mitteilungen sind für diese App blockiert. Erlauben in den iPhone-Einstellungen → Mitteilungen → Solar.'
       : sub ? 'Dieses Gerät bekommt Mitteilungen. Antippen öffnet das Dashboard an der passenden Stelle.'
         : 'Mitteilungen kommen vom Dashboard selbst, ohne zusätzliche App. Gilt für jedes Gerät einzeln.';
   }
-  const keyBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
   $('btnPush').onclick = async () => {
     const btn = $('btnPush');
     try {
@@ -3095,7 +3109,7 @@
     try {
       const r = await (await fetch('/api/push/test', { method: 'POST' })).json();
       btn.textContent = r.sent ? `Gesendet an ${r.sent} ${r.sent === 1 ? 'Gerät' : 'Geräte'} ✓` : 'Nicht gesendet';
-      if (!r.sent) alert(`Mitteilung nicht gesendet. ${r.error || ''}`);
+      if (!r.sent) alert(r.total ? `Mitteilung nicht gesendet. ${r.error || ''}` : 'Mitteilung nicht gesendet: Der Server kennt kein Gerät. Auf diesem Gerät „ausschalten“ und wieder „erlauben“.');
     } catch { btn.textContent = 'Fehler'; }
     setTimeout(() => { btn.disabled = false; btn.textContent = label; }, 3000);
   };
