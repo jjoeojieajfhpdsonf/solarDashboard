@@ -1,0 +1,19 @@
+services:
+  solar-dashboard-iphone:
+    build: .
+    container_name: solar-dashboard-iphone
+    restart: unless-stopped
+    ports:
+      - "8082:8080"   # Widget-Design im iPhone-Stil, läuft parallel zu 8080 (alt) und 8081 (neu)
+    environment:
+      SOLARLOG_URL: http://192.168.0.76
+      PLANT_NAME: Solaranlage
+      POLL_SECONDS: 15      # drittes Dashboard am selben Solar-Log: langsamer Takt schont das Gerät
+      TARIFF_IMPORT: 0.30   # Startwerte, später im Dashboard änderbar
+      TARIFF_FEED: 0.10     # CHF/kWh Rückliefervergütung
+      TZ: Europe/Zurich
+      INVERTER_COUNT: 2
+      BATTERY_KWH: 0        # Batteriekapazität, auch im Dashboard einstellbar
+      # DEMO: "1"           # simulierte Daten zum Ausprobieren
+    volumes:
+      - ./data:/data

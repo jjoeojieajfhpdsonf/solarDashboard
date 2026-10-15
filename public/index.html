@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="de-CH">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0A0D18">
+<title>Solaranlage</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☀️</text></svg>">
+<!-- App auf dem Homescreen: eigenes Icon, Vollbild ohne Browserleisten -->
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Solar iPhone">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<!-- Hell oder dunkel schon vor dem ersten Zeichnen, sonst blitzt beim Öffnen kurz ein weisser Hintergrund auf -->
+<style>html { background: #0A0D18; color-scheme: dark; } html.light { background: #F2F3F7; color-scheme: light; }</style>
+<script>
+  (function () {
+    var p = 'auto'; try { p = localStorage.getItem('solar.theme') || 'auto'; } catch (e) { /* egal */ }
+    var l = p === 'light' || (p === 'auto' && matchMedia('(prefers-color-scheme: light)').matches);
+    if (l) { document.documentElement.classList.add('light'); document.querySelector('meta[name="theme-color"]').setAttribute('content', '#F2F3F7'); }
+  })();
+</script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><h1 id="plantName">Solaranlage</h1><span class="kwp" id="kwp"></span></div>
+    <div class="status" id="status" role="status"><span class="dot"></span><span id="statusText">Verbinde mit dem Server…</span></div>
+    <div class="top-bat" id="topBat" role="img" hidden>
+      <svg viewBox="0 0 30 16" width="30" height="16" aria-hidden="true">
+        <rect x="1" y="1" width="25" height="14" rx="3.5" fill="none" stroke="currentColor" stroke-width="1.6"/>
+        <rect x="27" y="5" width="2.2" height="6" rx="1" fill="currentColor"/>
+        <rect class="lvl" id="topBatFill" x="3.5" y="3.5" width="0" height="9" rx="1.5"/>
+        <path class="bolt" d="M14.5 2.5 10 8.8h3.4l-1.4 4.7 4.6-6.4h-3.4z"/>
+      </svg>
+      <span id="topBatPct">–</span>
+    </div>
+  </header>
+  <div class="alert" id="alert" hidden></div>
+
+  <div class="rv-banner" id="rvBanner" role="status" hidden></div>
+  <main class="board" id="board"></main>
+
+  <footer id="footer"></footer>
+</div>
+
+<nav class="tabbar" id="tabbar" aria-label="Bereiche" hidden></nav>
+
+<div class="fab" id="fab">
+  <div class="fab-menu" id="fabMenu" hidden>
+    <button type="button" data-a="edit">Widgets bearbeiten</button>
+    <button type="button" data-a="settings">Einstellungen</button>
+  </div>
+  <button class="fab-btn" id="fabBtn" type="button" aria-label="Widgets bearbeiten" title="Widgets bearbeiten">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+  </button>
+</div>
+
+<div class="edit-bar" id="editBar" hidden>
+  <div class="edit-sel" id="editSel"></div>
+  <div class="edit-row">
+  <button class="btn" id="btnAdd" type="button">+ Widget</button>
+  <button class="btn icon" id="btnSettings" type="button" aria-label="Einstellungen" title="Einstellungen"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="6.2"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/></svg></button>
+  <button class="btn" id="btnReset" type="button">Standard</button>
+  <button class="btn primary" id="btnDone" type="button">Fertig</button>
+  </div>
+</div>
+
+<dialog id="stkDlg" class="ios-sheet stk-sheet" aria-labelledby="stkTitle">
+  <div class="ios-set">
+    <header class="ios-nav"><button class="nav-btn" type="button" id="stkCancel">Abbrechen</button><h2 id="stkTitle" tabindex="-1" autofocus>Stapel</h2><button class="nav-btn strong" type="button" id="stkSave">Fertig</button></header>
+    <div class="ios-body"><h3 class="ios-sec">Widgets im Stapel</h3><div class="ios-group" id="stkList"></div>
+      <p class="ios-foot">Widgets, die schon einzeln auf demselben Tab liegen, blendet der Stapel aus.</p></div>
+  </div>
+</dialog>
+
+<dialog id="gal" class="gal" aria-labelledby="galTitle">
+  <div class="gal-head"><h2 id="galTitle">Widget hinzufügen</h2><button class="btn" id="galClose" type="button">Schliessen</button></div>
+  <p class="gal-hint" id="galHint"></p>
+  <div class="gal-grid" id="galGrid"></div>
+</dialog>
+
+<dialog id="dlg" class="ios-sheet" aria-labelledby="dlgTitle">
+  <form class="ios-set" id="settingsForm" novalidate>
+    <header class="ios-nav">
+      <button class="nav-btn" type="button" id="btnCancel">Abbrechen</button>
+      <h2 id="dlgTitle" tabindex="-1" autofocus>Einstellungen</h2>
+      <button class="nav-btn strong" type="submit" id="btnSave">Fertig</button>
+    </header>
+    <div class="ios-body">
+      <h3 class="ios-sec">Darstellung</h3>
+      <div class="ios-group">
+        <label class="ios-row"><span>Erscheinungsbild</span><select name="theme"><option value="auto">Automatisch</option><option value="light">Hell</option><option value="dark">Dunkel</option></select></label>
+      </div>
+      <p class="ios-foot">Automatisch folgt der Einstellung des Geräts. Gilt nur für dieses Gerät.</p>
+      <h3 class="ios-sec">Anlage</h3>
+      <div class="ios-group">
+        <label class="ios-row"><span>Name</span><input name="plantName" maxlength="60" autocomplete="off"></label>
+        <label class="ios-row"><span>Wechselrichter</span><input name="inverterCount" type="text" inputmode="numeric"></label>
+        <label class="ios-row"><span>Akku-Kapazität</span><input name="batteryCapacity" type="text" inputmode="decimal"><em>kWh</em></label>
+      </div>
+      <h3 class="ios-sec">Namen der Wechselrichter</h3>
+      <div class="ios-group" id="invNames"></div>
+
+      <h3 class="ios-sec">Ertragsprognose</h3>
+      <div class="ios-group">
+        <label class="ios-row"><span>Standort</span><input name="location" maxlength="80" placeholder="Ort oder Koordinaten"></label>
+        <label class="ios-row"><span>Dachneigung</span><input name="pvTilt" type="text" inputmode="numeric"><em>°</em></label>
+        <label class="ios-row"><span>Ausrichtung</span><input name="pvOrientation" maxlength="40" placeholder="z. B. 169, 259"><em>°</em></label>
+      </div>
+      <p class="ios-foot" id="fcHint"></p>
+
+      <h3 class="ios-sec">3D-Haus</h3>
+      <div class="ios-group">
+        <label class="ios-row"><span>Darstellung</span><select name="houseModel"><option value="default">Standardhaus</option><option value="real">Echtes Haus (swisstopo)</option></select></label>
+        <label class="ios-row"><span>Adresse</span><input name="bldAddress" maxlength="120" placeholder="Dorfstrasse 1, 5000 Aarau" autocomplete="street-address"></label>
+        <button class="ios-row ios-action" type="button" id="btnBld">Haus laden</button>
+      </div>
+      <p class="ios-foot" id="bldHint"></p>
+      <svg class="bld-preview" id="bldPreview" viewBox="0 0 400 330" hidden aria-label="Vorschau 3D-Haus"></svg>
+      <div class="ios-group">
+        <label class="ios-row ios-stack"><span>Blickrichtung <b id="houseRotVal" class="val"></b></span><input name="houseRot" type="range" min="-180" max="180" step="5" value="0"></label>
+        <button class="ios-row ios-action" type="button" id="btnRot0">Startansicht</button>
+        <label class="ios-row"><span>Fassadenfarbe</span><input name="facadeColor" type="color" value="#cfc8ba"></label>
+        <button class="ios-row ios-action" type="button" id="btnFacade">Standardfarbe</button>
+      </div>
+
+      <h3 class="ios-sec">Tarife</h3>
+      <div class="ios-group">
+        <label class="ios-row"><span>Netzbezug</span><select name="tariffAuto"><option value="1">Automatisch</option><option value="0">Von Hand</option></select></label>
+        <label class="ios-row" id="rowTariffCat"><span>Haushalt</span><select name="tariffCategory"><option value="H1">2-Zimmer-Wohnung</option><option value="H2">4-Zimmer-Wohnung</option><option value="H3">4-Zimmer mit Boiler</option><option value="H4">5-Zimmer-Wohnung</option><option value="H5">Einfamilienhaus</option><option value="H6">Haus mit Elektroheizung</option><option value="H7">Haus mit Wärmepumpe</option><option value="H8">Grosse Wohnung</option></select></label>
+        <label class="ios-row"><span>Preis Netzbezug</span><input name="tariffImport" type="text" inputmode="decimal"><em>CHF/kWh</em></label>
+        <label class="ios-row"><span>Rückliefervergütung</span><input name="tariffFeed" type="text" inputmode="decimal"><em>CHF/kWh</em></label>
+      </div>
+      <p class="ios-foot" id="tariffHint"></p>
+
+      <h3 class="ios-sec">Soll-Ertrag</h3>
+      <div class="ios-group">
+        <label class="ios-row"><span>Jahresertrag pro kWp</span><input name="specificTarget" type="text" inputmode="decimal"><em>kWh</em></label>
+      </div>
+      <h3 class="ios-sec">Verteilung auf die Monate (%)</h3>
+      <div class="ios-group ios-months" id="monthDist"></div>
+      <p class="ios-foot">Wird beim Speichern auf 100 % skaliert.</p>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="rv" class="rv" aria-label="Solar-Rückblick">
+  <div class="rv-card" id="rvCard">
+    <div class="rv-bars" id="rvBars"></div>
+    <div class="rv-kicker" id="rvKicker"></div>
+    <div class="rv-body" id="rvBody"></div>
+    <div class="rv-foot" id="rvFoot"></div>
+  </div>
+  <button class="rv-close" id="rvClose" type="button" aria-label="Rückblick schliessen">✕</button>
+</dialog>
+
+<script src="vendor/chart.umd.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="de-CH">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0A0D18">
+<title>Solar App (Prototyp)</title>
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=Instrument+Sans:wght@400..600&display=swap" rel="stylesheet">
+<style>
+/* Prototyp im Stil einer Hersteller-App: dunkel, 3D-Haus, Werte direkt an den Bauteilen. Liest die Live-Daten des Dashboards. */
+:root {
+  --bg: #0A0D18; --card: rgba(255, 255, 255, .055); --card-line: rgba(255, 255, 255, .08);
+  --ink: #EEF1F8; --muted: #8E98B0; --dim: #5D6680;
+  --sun: #FFC23D; --own: #3CC495; --feed: #4CC3F5; --imp: #D9A094; --bat: #B39CFF; --house: #86A8FF;
+  --display: "Bricolage Grotesque", system-ui, sans-serif; --text: "Instrument Sans", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--ink); font: 400 15px/1.45 var(--text); -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums; min-height: 100dvh;
+}
+.app { max-width: 430px; margin: 0 auto; padding: max(14px, env(safe-area-inset-top)) 18px calc(96px + env(safe-area-inset-bottom)); position: relative; overflow: hidden; }
+/* violetter Schimmer hinter dem Haus wie im Vorbild */
+.app::before {
+  content: ""; position: absolute; left: 50%; top: 140px; width: 520px; height: 420px; transform: translateX(-50%);
+  background: radial-gradient(closest-side, rgba(124, 92, 255, .32), rgba(124, 92, 255, .08) 60%, transparent); pointer-events: none;
+}
+.top { position: relative; text-align: center; }
+.top small { display: block; color: var(--dim); font-size: 12px; }
+.top h1 { font: 650 22px/1.2 var(--display); margin: 4px 0 2px; letter-spacing: -0.01em; }
+.top .sub { color: var(--muted); font-size: 13px; }
+.top .sub .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--own); margin-right: 6px; vertical-align: 1px; box-shadow: 0 0 0 3px rgba(60, 196, 149, .2); }
+.top .sub .dot.err { background: #E5604D; box-shadow: 0 0 0 3px rgba(229, 96, 77, .2); }
+.weather { position: absolute; left: 0; top: 64px; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); z-index: 2; }
+.weather b { color: var(--ink); font-weight: 600; }
+
+.scene { position: relative; margin: 6px -18px 0; }
+.scene svg { display: block; width: 100%; height: auto; }
+.flow { fill: none; stroke-width: 2.4; stroke-linecap: round; stroke-dasharray: 2 9; opacity: 0; transition: opacity .6s; animation: run var(--dur, 1.6s) linear infinite; }
+.flow.on { opacity: 1; }
+.flow.rev { animation-direction: reverse; } /* Energie fliesst zum Wechselrichter hin */
+@keyframes run { to { stroke-dashoffset: -22; } }
+.tag-val { font: 600 17px var(--display); fill: var(--ink); }
+.tag-lbl { font: 600 9.5px var(--text); letter-spacing: .08em; fill: var(--muted); }
+.tag-sub { font: 600 10.5px var(--text); }
+
+.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; position: relative; margin-top: 4px; }
+.card { background: var(--card); border: 1px solid var(--card-line); border-radius: 18px; padding: 14px 15px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+.card .k { color: var(--muted); font-size: 12.5px; margin: 0 0 4px; }
+.card .v { font: 600 24px/1.1 var(--display); letter-spacing: -0.02em; margin: 0; }
+.card .v small { font: 500 13px var(--text); color: var(--muted); margin-left: 3px; letter-spacing: 0; }
+.card .s { color: var(--muted); font-size: 12.5px; margin: 4px 0 0; }
+.segs { display: flex; gap: 3px; margin-top: 10px; }
+.segs i { flex: 1; height: 12px; border-radius: 3px; background: rgba(255, 255, 255, .1); }
+.segs i.on { background: var(--own); }
+.segs i.low { background: #E5604D; }
+.segs i.now { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+.mode { display: inline-flex; align-items: center; gap: 7px; }
+.mode i { width: 9px; height: 9px; border-radius: 50%; }
+
+.section { margin: 18px 0 8px; font: 600 16px var(--display); position: relative; }
+.list { background: var(--card); border: 1px solid var(--card-line); border-radius: 18px; padding: 4px 15px; position: relative; }
+.row { display: flex; align-items: center; gap: 10px; padding: 11px 0; }
+.row + .row { border-top: 1px solid var(--card-line); }
+.row .d { width: 8px; height: 8px; border-radius: 50%; background: var(--own); flex: none; }
+.row .d.warn { background: #E5604D; }
+.row .d.idle { background: var(--dim); }
+.row span { flex: 1; }
+.row em { font-style: normal; color: var(--muted); font-size: 13.5px; }
+
+.tabbar {
+  position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: center; z-index: 10;
+  background: rgba(10, 13, 24, .82); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  border-top: 1px solid var(--card-line); padding: 6px 10px max(8px, env(safe-area-inset-bottom));
+}
+.tabbar a { flex: 1; max-width: 110px; display: flex; flex-direction: column; align-items: center; gap: 2px; color: var(--dim); text-decoration: none; font-size: 11.5px; padding: 4px 0; }
+.tabbar a.on { color: var(--ink); }
+.tabbar svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.tabbar a.on svg { stroke: var(--own); }
+.proto { position: relative; text-align: center; color: var(--dim); font-size: 12px; margin-top: 16px; }
+.proto a { color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { .flow { animation: none; stroke-dasharray: none; } .segs i.now { animation: none; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <small id="updated">Verbinde…</small>
+    <h1 id="name">Solaranlage</h1>
+    <div class="sub"><span class="dot" id="dot"></span><span id="netState">Am Netz</span></div>
+  </header>
+  <div class="weather" id="weather"></div>
+
+  <div class="scene"><svg id="scene" viewBox="0 0 400 330" role="img" aria-label="Haus mit Solaranlage, Batterie und Netzanschluss"></svg></div>
+
+  <div class="cards">
+    <div class="card">
+      <p class="k">Akt. Batteriestand</p>
+      <p class="v" id="socV">–</p>
+      <div class="segs" id="segs"></div>
+    </div>
+    <div class="card">
+      <p class="k">Aktueller Zustand</p>
+      <p class="v mode" id="modeV" style="font-size:19px">–</p>
+      <p class="s" id="modeS"></p>
+    </div>
+    <div class="card">
+      <p class="k">Heute produziert</p>
+      <p class="v" id="todayV">–</p>
+      <p class="s" id="todayS"></p>
+    </div>
+    <div class="card">
+      <p class="k">Prognose morgen</p>
+      <p class="v" id="fcV">–</p>
+      <p class="s" id="fcS"></p>
+    </div>
+  </div>
+
+  <h2 class="section">Systemzustände</h2>
+  <div class="list" id="sys"></div>
+  <p class="proto">Prototyp mit Live-Daten · <a href="./">zum Dashboard</a></p>
+</div>
+
+<nav class="tabbar">
+  <a class="on" href="#"><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9h-5v-6H9v6H4z"/></svg>Übersicht</a>
+  <a href="./"><svg viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M21 19H3"/></svg>Verlauf</a>
+  <a href="./"><svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"/><path d="M10 7h4M12 15v2"/></svg>Gerät</a>
+  <a href="./"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>Einstellung</a>
+</nav>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const f = (d) => new Intl.NumberFormat('de-CH', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const kW = (w) => `${f(w >= 10000 ? 1 : 2).format(w / 1000)} kW`;
+  const kWh = (wh) => wh == null ? '–' : `${f(Math.abs(wh) >= 100000 ? 0 : 1).format(wh / 1000)}`;
+
+  // ---------- Isometrisches Haus ----------
+  // Weltkoordinaten in Metern (x nach rechts unten, y nach links unten, z nach oben) -> SVG
+  const S = 20, OX = 198, OY = 92;
+  const iso = (x, y, z) => [OX + (x - y) * 0.866 * S, OY + (x + y) * 0.5 * S - z * S];
+  const pts = (list) => list.map((p) => iso(...p).map((v) => v.toFixed(1)).join(',')).join(' ');
+  const poly = (list, fill, extra = '') => `<polygon points="${pts(list)}" fill="${fill}" ${extra}/>`;
+  const lerp = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+  // Haus: 7 m breit (x), 5 m tief (y), Wände 3 m, Firstdach entlang x (First bei y=2.5, z=5)
+  const W = 7, D = 5, H = 3, RIDGE = 5.1;
+  const eaveF = (x) => [x, D + 0.35, H - 0.2], ridge = (x) => [x, D / 2, RIDGE];
+  function scene() {
+    let s = '';
+    // Boden
+    s += poly([[-1.4, -1.2, 0], [W + 2.4, -1.2, 0], [W + 2.4, D + 3, 0], [-1.4, D + 3, 0]], '#141A2C');
+    s += poly([[-1.4, D + 3, 0], [W + 2.4, D + 3, 0], [W + 2.4, D + 3, -0.35], [-1.4, D + 3, -0.35]], '#0E1322');
+    s += poly([[W + 2.4, -1.2, 0], [W + 2.4, D + 3, 0], [W + 2.4, D + 3, -0.35], [W + 2.4, -1.2, -0.35]], '#0C101D');
+    // Wände: Front (y = D) und rechte Seite (x = W) sind sichtbar
+    s += poly([[0, D, 0], [W, D, 0], [W, D, H], [0, D, H]], '#2A3048');
+    s += poly([[W, 0, 0], [W, D, 0], [W, D, H], [W, 0, H]], '#20253A');
+    // Giebel rechts
+    s += poly([[W, 0, H], [W, D, H], [W, D / 2, RIDGE]], '#1B2034');
+    // Fenster rechte Seite (warm beleuchtet, wenn das Haus Strom braucht)
+    for (const [y0, y1] of [[0.7, 1.9], [3.1, 4.3]]) s += poly([[W, y0, 1.0], [W, y1, 1.0], [W, y1, 2.3], [W, y0, 2.3]], '#2F3A5E', 'class="win"');
+    // Tür und Fenster vorne
+    s += poly([[1.0, D, 0], [2.1, D, 0], [2.1, D, 2.2], [1.0, D, 2.2]], '#171C2D');
+    s += poly([[2.9, D, 1.0], [4.1, D, 1.0], [4.1, D, 2.3], [2.9, D, 2.3]], '#2F3A5E', 'class="win"');
+    // Dach: vordere Fläche (Süden) mit Modulen
+    s += poly([eaveF(-0.35), eaveF(W + 0.35), ridge(W + 0.35), ridge(-0.35)], '#11152A');
+    s += poly([ridge(-0.35), ridge(W + 0.35), [W + 0.35, D / 2, RIDGE + 0.12], [-0.35, D / 2, RIDGE + 0.12]], '#2A3150');
+    // Module 6 x 2 auf der vorderen Dachfläche
+    const cols = 6, rows = 2;
+    for (let c = 0; c < cols; c++) for (let r = 0; r < rows; r++) {
+      const u0 = 0.25 + c * (W - 0.5) / cols + 0.05, u1 = 0.25 + (c + 1) * (W - 0.5) / cols - 0.05;
+      const v0 = 0.12 + r * 0.4, v1 = 0.12 + (r + 1) * 0.4 - 0.04;
+      const P = (u, v) => lerp(eaveF(u), ridge(u), v);
+      s += poly([P(u0, v0), P(u1, v0), P(u1, v1), P(u0, v1)], '#1D2E5C', 'class="panel" stroke="#3A5BA8" stroke-width=".6"');
+    }
+    // Wechselrichter an der Front
+    s += poly([[4.9, D, 1.2], [6.1, D, 1.2], [6.1, D, 2.3], [4.9, D, 2.3]], '#3B4466');
+    s += poly([[4.9, D, 1.2], [6.1, D, 1.2], [6.1, D + 0.25, 1.2], [4.9, D + 0.25, 1.2]].map((p) => p), '#323A58');
+    s += poly([[4.9, D + 0.25, 1.2], [6.1, D + 0.25, 1.2], [6.1, D + 0.25, 2.3], [4.9, D + 0.25, 2.3]], '#D7DCE8');
+    s += poly([[6.1, D, 1.2], [6.1, D + 0.25, 1.2], [6.1, D + 0.25, 2.3], [6.1, D, 2.3]], '#AEB6CA');
+    // Batterie (Turm) neben dem Haus, rechts vorne
+    const bx0 = W + 0.6, bx1 = W + 1.6, by0 = D - 1.4, by1 = D - 0.5, bz = 2.1;
+    s += poly([[bx0, by1, 0], [bx1, by1, 0], [bx1, by1, bz], [bx0, by1, bz]], '#E3E7F0');
+    s += poly([[bx1, by0, 0], [bx1, by1, 0], [bx1, by1, bz], [bx1, by0, bz]], '#B7BED0');
+    s += poly([[bx0, by0, bz], [bx1, by0, bz], [bx1, by1, bz], [bx0, by1, bz]], '#F3F5FA');
+    for (let i = 0; i < 4; i++) s += poly([[bx0 + 0.15, by1, 0.3 + i * 0.45], [bx1 - 0.15, by1, 0.3 + i * 0.45], [bx1 - 0.15, by1, 0.36 + i * 0.45], [bx0 + 0.15, by1, 0.36 + i * 0.45]], '#C9CFDD', `class="cell" data-i="${i}"`);
+    // Netzanschluss: Zählerkasten links vorne
+    s += poly([[-1.0, D + 1.2, 0], [-0.3, D + 1.2, 0], [-0.3, D + 1.2, 1.4], [-1.0, D + 1.2, 1.4]], '#3A4260');
+    s += poly([[-0.3, D + 0.7, 0], [-0.3, D + 1.2, 0], [-0.3, D + 1.2, 1.4], [-0.3, D + 0.7, 1.4]], '#2C3350');
+    s += poly([[-1.0, D + 0.7, 1.4], [-0.3, D + 0.7, 1.4], [-0.3, D + 1.2, 1.4], [-1.0, D + 1.2, 1.4]], '#4A5374');
+
+    // Energieflüsse: Dach -> Wechselrichter, Wechselrichter -> Haus/Batterie/Netz
+    const P = (...p) => iso(...p).map((v) => v.toFixed(1)).join(' ');
+    const paths = {
+      pv: `M${P(3.5, D + 0.1, 3.4)} C ${P(4.5, D + 0.6, 3.0)} ${P(5.5, D + 0.6, 2.6)} ${P(5.5, D + 0.3, 2.3)}`,
+      house: `M${P(5.2, D + 0.3, 1.6)} C ${P(4.6, D + 1.2, 1.2)} ${P(3.6, D + 1.0, 1.4)} ${P(3.5, D, 1.6)}`,
+      bat: `M${P(6.1, D + 0.25, 1.6)} C ${P(6.8, D + 0.6, 1.2)} ${P(7.4, D, 1.0)} ${P(bx0 + 0.4, by1, 1.1)}`,
+      grid: `M${P(4.9, D + 0.25, 1.4)} C ${P(3.0, D + 2.4, 0.2)} ${P(0.5, D + 2.2, 0.2)} ${P(-0.6, D + 1.2, 0.8)}`,
+    };
+    for (const [k, d] of Object.entries(paths)) s += `<path class="flow" data-f="${k}" d="${d}"/>`;
+
+    // Beschriftungen mit Leitlinie: [Anker in Welt, Textposition in SVG, Ausrichtung]
+    const tag = (key, anchor, tx, ty, align, label) => {
+      const [ax, ay] = iso(...anchor);
+      return `<path d="M${ax.toFixed(1)} ${ay.toFixed(1)} L${tx} ${ty + 4}" stroke="rgba(255,255,255,.18)" stroke-width="1" fill="none"/>
+        <circle cx="${ax.toFixed(1)}" cy="${ay.toFixed(1)}" r="2.2" fill="rgba(255,255,255,.5)"/>
+        <text x="${tx}" y="${ty}" text-anchor="${align}"><tspan class="tag-val" data-v="${key}">–</tspan>
+        <tspan class="tag-lbl" x="${tx}" dy="14">${label}</tspan><tspan class="tag-sub" data-s="${key}" x="${tx}" dy="14"></tspan></text>`;
+    };
+    s += tag('pv', [2.0, 3.6, 4.2], 70, 40, 'start', 'SOLAR');
+    s += tag('house', [W, 1.2, 2.6], 352, 74, 'end', 'ZUHAUSE');
+    s += tag('bat', [bx1, by1, 1.6], 352, 250, 'end', 'BATTERIE');
+    s += tag('grid', [-0.65, D + 0.95, 1.4], 40, 286, 'start', 'NETZ');
+    $('scene').innerHTML = `<defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${s}`;
+  }
+  scene();
+  $('segs').innerHTML = '<i></i>'.repeat(10);
+
+  // ---------- Live-Daten ----------
+  // Linien sind vom Wechselrichter weg gezeichnet; fliesst Energie zu ihm hin (Netzbezug, Entladen), läuft die Animation rückwärts
+  const setFlow = (k, w, color, toward = false) => {
+    const el = document.querySelector(`[data-f="${k}"]`);
+    el.classList.toggle('on', w > 15);
+    el.classList.toggle('rev', toward);
+    el.setAttribute('stroke', color);
+    el.style.setProperty('--dur', `${Math.max(0.5, 2.6 - Math.log10(Math.max(w, 10)) * 0.55).toFixed(2)}s`);
+  };
+  const setTag = (k, val, sub, subColor) => {
+    document.querySelector(`[data-v="${k}"]`).textContent = val;
+    const s = document.querySelector(`[data-s="${k}"]`); s.textContent = sub || ''; s.setAttribute('fill', subColor || 'var(--muted)');
+  };
+  async function load() {
+    let st;
+    try { st = await fetch('/api/state', { cache: 'no-store' }).then((r) => r.json()); } catch { $('dot').className = 'dot err'; $('updated').textContent = 'Dashboard-Server nicht erreichbar'; return; }
+    const l = st.live, b = l.bat, t = st.today || {}, cap = st.settings.batteryCapacity;
+    const pv = l.pv, cons = l.cons, chg = b ? b.charge : 0, dis = b ? b.discharge : 0;
+    // Aufteilung wie im Dashboard: PV deckt zuerst das Haus, dann die Batterie, der Rest geht ins Netz
+    const self = Math.min(pv, cons), toBat = Math.min(chg, pv - self), feed = Math.max(pv - self - toBat, 0);
+    const fromBat = Math.min(dis, cons - self), imp = Math.max(cons - self - fromBat, 0);
+    const stale = !st.lastOk || st.now - st.lastOk > 60e3;
+
+    $('name').textContent = st.settings.plantName;
+    $('updated').textContent = st.lastOk ? `Zuletzt aktualisiert um ${new Date(st.lastOk).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })}` : 'Noch keine Daten';
+    $('dot').className = `dot${stale || st.error ? ' err' : ''}`;
+    $('netState').textContent = stale || st.error ? 'Keine Verbindung zum Solar-Log' : feed > 15 ? 'Speist ins Netz ein' : imp > 15 ? 'Bezieht vom Netz' : 'Am Netz';
+
+    setTag('pv', kW(pv), st.kwp && pv > 15 ? `${f(0).format(pv / st.kwp / 10)} % Leistung` : pv > 15 ? '' : 'keine Produktion', 'var(--sun)');
+    setTag('house', kW(cons), '', '');
+    setTag('bat', b ? `${kW(chg > 15 ? chg : dis)} · ${f(0).format(b.soc)} %` : '–', b ? (chg > 15 ? 'Laden' : dis > 15 ? 'Entladen' : 'Ruht') : '', chg > 15 ? 'var(--own)' : dis > 15 ? 'var(--bat)' : 'var(--muted)');
+    setTag('grid', kW(feed > 15 ? feed : imp), feed > 15 ? 'Einspeisung' : imp > 15 ? 'Bezug' : '', feed > 15 ? 'var(--feed)' : 'var(--imp)');
+    setFlow('pv', pv, 'var(--sun)');
+    // ins Haus fliesst der ganze Verbrauch, gefärbt nach der grössten Quelle
+    const main = Math.max(self, fromBat, imp);
+    setFlow('house', cons, main === imp && imp > 15 ? 'var(--imp)' : main === fromBat && fromBat > 15 ? 'var(--bat)' : 'var(--sun)');
+    setFlow('bat', chg > 15 ? toBat : fromBat, chg > 15 ? 'var(--own)' : 'var(--bat)', chg <= 15);
+    setFlow('grid', feed > 15 ? feed : imp, feed > 15 ? 'var(--feed)' : 'var(--imp)', feed <= 15);
+    // Module leuchten mit der Produktion, Fenster bei Verbrauch
+    const share = st.kwp ? Math.min(1, pv / (st.kwp * 1000)) : 0;
+    document.querySelectorAll('.panel').forEach((p) => { p.setAttribute('fill', share > 0.02 ? `color-mix(in srgb, #FFC23D ${Math.round(18 + share * 60)}%, #1D2E5C)` : '#1D2E5C'); p.setAttribute('filter', share > 0.15 ? 'url(#glow)' : ''); });
+    document.querySelectorAll('.win').forEach((w) => w.setAttribute('fill', cons > 300 ? '#C9A35A' : '#2F3A5E'));
+    document.querySelectorAll('.cell').forEach((c) => c.setAttribute('fill', b && b.soc > (Number(c.dataset.i) * 25) ? '#3CC495' : '#C9CFDD'));
+
+    // Batterie-Karte
+    if (b) {
+      $('socV').innerHTML = cap ? `${f(1).format(cap * b.soc / 100)}<small>kWh</small>` : `${f(0).format(b.soc)}<small>%</small>`;
+      const n = Math.round(b.soc / 10);
+      [...$('segs').children].forEach((s, i) => { s.className = i < n ? (b.soc < 15 ? 'on low' : 'on') : ''; if (i === Math.min(9, n) && chg > 15) s.classList.add('now'); });
+    }
+    // Zustand
+    const mode = feed > 300 ? ['Überschuss', 'var(--feed)', 'Guter Moment für Grossverbraucher'] : imp > 300 ? ['Netzbezug', 'var(--imp)', 'Das Haus braucht mehr, als gerade da ist'] : fromBat > 15 ? ['Batteriebetrieb', 'var(--bat)', 'Das Haus läuft mit der Batterie'] : ['Eigenverbrauch', 'var(--own)', 'Das Haus läuft mit Solarstrom'];
+    $('modeV').innerHTML = `<i style="background:${mode[1]}"></i>${mode[0]}`; $('modeS').textContent = mode[2];
+    // Heute
+    $('todayV').innerHTML = `${kWh(t.yieldWh)}<small>kWh</small>`;
+    $('todayS').textContent = t.coveredWh != null && t.consWh ? `${f(0).format(t.coveredWh / t.consWh * 100)} % autark` : '';
+    // Systemzustände
+    const inv = l.inv || [], names = st.settings.inverterNames || [];
+    const rows = [
+      [stale || st.error ? 'warn' : '', 'Solar-Log', stale || st.error ? 'keine Verbindung' : 'verbunden'],
+      ...inv.map((w, i) => [w > 15 ? '' : 'idle', names[i] || `Wechselrichter ${i + 1}`, w > 15 ? kW(w) : 'Standby']),
+      b ? [b.soc < 10 ? 'warn' : '', 'Batterie', `${f(0).format(b.soc)} % · ${chg > 15 ? 'lädt' : dis > 15 ? 'entlädt' : 'ruht'}`] : null,
+    ].filter(Boolean);
+    $('sys').innerHTML = rows.map(([c, n, v]) => `<div class="row"><i class="d ${c}"></i><span>${n}</span><em>${v}</em></div>`).join('');
+  }
+  async function loadForecast() {
+    const fc = await fetch('/api/forecast', { cache: 'no-store' }).then((r) => r.json()).catch(() => null);
+    const m = fc?.days?.[fc.tomorrow], t = fc?.days?.[fc.today];
+    if (m) { $('fcV').innerHTML = `${kWh(m.wh)}<small>kWh</small>`; $('fcS').textContent = [m.weather, m.sunnyFrom != null ? `ab ${m.sunnyFrom} Uhr` : ''].filter(Boolean).join(', '); }
+    if (t) $('weather').innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FFC23D" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6 19 19M5 19l1.4-1.4M17.6 6.4 19 5"/></svg><span><b>${t.weather || ''}</b></span>`;
+  }
+  load(); loadForecast();
+  setInterval(load, 5000); setInterval(loadForecast, 10 * 60e3);
+})();
+</script>
+</body>
+</html>
