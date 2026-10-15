@@ -8,7 +8,6 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import zlib from 'node:zlib';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const env = process.env;
@@ -130,6 +129,9 @@ const meta = (k, fallback) => { const r = q.getMeta.get(k); return r ? JSON.pars
 const setMeta = (k, v) => q.setMeta.run(k, JSON.stringify(v));
 
 let settings = { ...DEFAULT_SETTINGS, ...meta('settings', {}) };
+// echtes 3D-Haus (swisstopo) gibt es nicht mehr: alte Einstellungen und das gespeicherte Haus entfernen
+for (const k of ['houseModel', 'houseRot', 'facadeColor']) delete settings[k];
+q.setMeta.run('building', 'null');
 let layout = meta('layout', DEFAULT_LAYOUT);
 // Prognose-Widget einmalig direkt unter dem Energiefluss einfügen (bestehende Layouts)
 if (!meta('forecastWidgetAdded', false)) {
@@ -882,10 +884,6 @@ function cleanSettings(s) {
   out.pvTilt = Math.round(n(s.pvTilt, 0, 90, settings.pvTilt ?? 30));
   const az = parseAzimuths(s.pvOrientation);
   if (az) out.pvOrientation = az.join(', ');
-  // 3D-Haus: Blickrichtung in Grad (0 = automatisch auf die Module) und Fassadenfarbe (#rrggbb)
-  if (s.houseRot != null) out.houseRot = Math.round(n(s.houseRot, -180, 180, 0));
-  if (s.houseModel === 'default' || s.houseModel === 'real') out.houseModel = s.houseModel;
-  if (typeof s.facadeColor === 'string' && /^#[0-9a-f]{6}$/i.test(s.facadeColor)) out.facadeColor = s.facadeColor.toLowerCase();
   return out;
 }
 const WIDGETS = new Set(['battery', 'forecast', 'flow', 'status', 'day', 'figures', 'balance', 'target', 'inverters', 'heatmap', 'ratios', 'yearCompare', 'totals',
@@ -1128,126 +1126,6 @@ async function refreshTariff() {
   applyTariff(); setMeta('settings', settings);
 }
 
-// ---------- 3D-Haus aus swisstopo-Daten ----------
-// Adresse -> Koordinaten (Ortssuche swisstopo) -> Dachflächen des Gebäudes (sonnendach.ch, BFE) mit Umriss, Neigung
-// und Ausrichtung (0 = Süd, −90 = Ost, 90 = West) -> Geschosszahl (Gebäuderegister). Das Frontend baut daraus das Haus.
-const GEO = 'https://api3.geo.admin.ch/rest/services';
-const geoGet = async (url) => {
-  const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
-  if (!r.ok) throw new Error(`swisstopo antwortet mit HTTP ${r.status}`);
-  return r.json();
-};
-const identifyUrl = (layer, E, N, tol, geom = true) => `${GEO}/all/MapServer/identify?geometryType=esriGeometryPoint&geometry=${E},${N}&layers=all:${layer}`
-  + `&tolerance=${tol}&mapExtent=${E - 100},${N - 100},${E + 100},${N + 100}&imageDisplay=500,500,96&sr=2056&returnGeometry=${geom}&geometryFormat=geojson`;
-// Höhen aus swissBUILDINGS3D: Die 3D-Kacheln (b3dm) enthalten pro Gebäude eine Tabelle mit Geländehöhe, tiefstem und
-// höchstem Dachpunkt (m ü. M.). Die Geometrie selbst ist Draco-komprimiert und wird nicht gebraucht.
-const TILES = 'https://3d.geo.admin.ch/ch.swisstopo.swissbuildings3d.3d/v1/';
-async function fetchHeights(lon, lat, egid) {
-  const L = lon * Math.PI / 180, B = lat * Math.PI / 180;
-  const hit = (r) => L >= r[0] && L <= r[2] && B >= r[1] && B <= r[3];
-  async function walk(tile, base) { // Blatt-Kachel suchen; Verweise auf weitere tileset.json werden nachgeladen
-    if (!hit(tile.boundingVolume.region)) return null;
-    const uri = tile.content?.uri;
-    if (uri?.endsWith('.json')) { const url = new URL(uri, base); return walk((await geoGet(url)).root, url); }
-    for (const c of tile.children || []) { const r = await walk(c, base); if (r) return r; }
-    return uri ? new URL(uri, base) : null;
-  }
-  const url = await walk((await geoGet(TILES + 'tileset.json')).root, new URL(TILES + 'tileset.json'));
-  if (!url) return null;
-  const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
-  const buf = Buffer.from(await r.arrayBuffer());
-  if (buf.toString('utf8', 0, 4) !== 'b3dm') return null;
-  const ftJ = buf.readUInt32LE(12), ftB = buf.readUInt32LE(16), btJ = buf.readUInt32LE(20);
-  const bt = JSON.parse(buf.toString('utf8', 28 + ftJ + ftB, 28 + ftJ + ftB + btJ));
-  // Gebäude über die EGID finden, sonst das nächstgelegene
-  let i = egid ? bt.EGID.findIndex((e) => String(e) === String(egid)) : -1;
-  if (i < 0) i = bt.Latitude.reduce((best, la, k) => (Math.hypot(la - lat, (bt.Longitude[k] - lon) * 0.68) < Math.hypot(bt.Latitude[best] - lat, (bt.Longitude[best] - lon) * 0.68) ? k : best), 0);
-  const ground = bt.GELAENDEPUNKT[i], min = bt.DACH_MIN[i], max = bt.DACH_MAX[i];
-  if (![ground, min, max].every(Number.isFinite)) return null;
-  return { eave: Math.round((min - ground) * 100) / 100, ridge: Math.round((max - ground) * 100) / 100 };
-}
-
-async function fetchBuilding(address) {
-  const s = await geoGet(`${GEO}/api/SearchServer?searchText=${encodeURIComponent(address)}&type=locations&origins=address&sr=2056&limit=1`);
-  const a = s.results?.[0]?.attrs;
-  if (!a) throw new Error(`Adresse „${address}“ nicht gefunden. Mit Strasse, Hausnummer und PLZ versuchen, z. B. „Dorfstrasse 1, 5000 Aarau“.`);
-  const E = a.y, N = a.x; // bei sr=2056: y = Ost, x = Nord
-  let roofs = [];
-  for (const tol of [5, 15, 30]) { roofs = (await geoGet(identifyUrl('ch.bfe.solarenergie-eignung-daecher', E, N, tol))).results || []; if (roofs.length) break; }
-  if (!roofs.length) throw new Error('Für diese Adresse gibt es bei sonnendach.ch keine Dachflächen.');
-  const id = (roofs[0].properties || roofs[0].attributes).building_id;
-  const all = await geoGet(`${GEO}/all/MapServer/find?layer=ch.bfe.solarenergie-eignung-daecher&searchField=building_id&searchText=${id}&contains=false&returnGeometry=true&geometryFormat=geojson&sr=2056`);
-  const faces = (all.results || []).map((r) => ({ p: r.properties || r.attributes, g: r.geometry }))
-    .filter(({ p, g }) => p.flaeche >= 1 && g?.type?.endsWith('Polygon'))
-    .map(({ p, g }) => ({
-      tilt: p.neigung, az: p.ausrichtung, area: Math.round(p.flaeche * 10) / 10,
-      // nur die Aussenringe, auf dm gerundet, relativ zur Adresse (kleinere Zahlen)
-      rings: (g.type === 'Polygon' ? [g.coordinates] : g.coordinates).map((poly) => poly[0].map(([x, y]) => [Math.round((x - E) * 10) / 10, Math.round((y - N) * 10) / 10])),
-    }));
-  if (!faces.length) throw new Error('Die Dachflächen dieses Gebäudes konnten nicht gelesen werden.');
-  const gwr = (await geoGet(identifyUrl('ch.bfs.gebaeude_wohnungs_register', E, N, 15, false)).catch(() => null))?.results?.[0];
-  const floors = Number((gwr?.attributes || gwr?.properties)?.gastw) || null;
-  const egid = (roofs[0].properties || roofs[0].attributes).gwr_egid || (gwr?.attributes || gwr?.properties)?.egid;
-  const heights = await fetchHeights(a.lon, a.lat, egid).catch((e) => { console.error('3D-Haus, Höhen:', e.message); return null; });
-  await roofColors(E, N, faces).catch((e) => console.error('3D-Haus, Dachfarben:', e.message));
-  return { address, label: String(a.label || address).replace(/<[^>]+>/g, ''), floors, heights, faces, fetched: Date.now() };
-}
-
-// Dachfarben aus dem Luftbild SWISSIMAGE (10 cm): Ausschnitt um das Haus als PNG laden und pro Dachfläche den Median
-// der Pixelfarben nehmen (unempfindlich gegen Schatten, Kamine und Dachfenster)
-function decodePng(buf) {
-  let pos = 8, w = 0, h = 0, type = 0, palette = null;
-  const idat = [];
-  while (pos < buf.length) {
-    const len = buf.readUInt32BE(pos), kind = buf.toString('ascii', pos + 4, pos + 8), data = buf.subarray(pos + 8, pos + 8 + len);
-    if (kind === 'IHDR') { w = data.readUInt32BE(0); h = data.readUInt32BE(4); type = data[9]; if (data[8] !== 8 || data[12] !== 0) throw new Error('PNG-Format nicht unterstützt'); }
-    if (kind === 'PLTE') palette = data;
-    if (kind === 'IDAT') idat.push(data);
-    pos += 12 + len;
-  }
-  const bpp = { 2: 3, 3: 1, 6: 4 }[type];
-  if (!bpp) throw new Error('PNG-Farbtyp nicht unterstützt');
-  const raw = zlib.inflateSync(Buffer.concat(idat)), stride = w * bpp, out = Buffer.alloc(w * h * 3);
-  let prev = Buffer.alloc(stride);
-  for (let y = 0; y < h; y++) {
-    const f = raw[y * (stride + 1)], line = Buffer.from(raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)));
-    for (let x = 0; x < stride; x++) { // PNG-Zeilenfilter rückgängig machen (None, Sub, Up, Average, Paeth)
-      const a = x >= bpp ? line[x - bpp] : 0, b = prev[x], c = x >= bpp ? prev[x - bpp] : 0;
-      const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
-      line[x] = (line[x] + [0, a, b, (a + b) >> 1, pa <= pb && pa <= pc ? a : pb <= pc ? b : c][f]) & 255;
-    }
-    for (let x = 0; x < w; x++) {
-      const o = (y * w + x) * 3;
-      if (type === 3) { const k = line[x] * 3; out[o] = palette[k]; out[o + 1] = palette[k + 1]; out[o + 2] = palette[k + 2]; }
-      else { out[o] = line[x * bpp]; out[o + 1] = line[x * bpp + 1]; out[o + 2] = line[x * bpp + 2]; }
-    }
-    prev = line;
-  }
-  return { w, h, rgb: out };
-}
-async function roofColors(E, N, faces) {
-  const all = faces.flatMap((f) => f.rings.flat());
-  const x0 = Math.min(...all.map((p) => p[0])) - 1, x1 = Math.max(...all.map((p) => p[0])) + 1;
-  const y0 = Math.min(...all.map((p) => p[1])) - 1, y1 = Math.max(...all.map((p) => p[1])) + 1;
-  const res = Math.max(0.1, Math.max(x1 - x0, y1 - y0) / 400), W = Math.round((x1 - x0) / res), H = Math.round((y1 - y0) / res);
-  const url = 'https://wms.geo.admin.ch/?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=ch.swisstopo.swissimage&STYLES=&CRS=EPSG:2056'
-    + `&BBOX=${E + x0},${N + y0},${E + x1},${N + y1}&WIDTH=${W}&HEIGHT=${H}&FORMAT=image/png`;
-  const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
-  if (!r.ok) throw new Error(`Luftbild: HTTP ${r.status}`);
-  const img = decodePng(Buffer.from(await r.arrayBuffer()));
-  const inRing = (pt, ring) => { let c = false; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) { const [xi, yi] = ring[i], [xj, yj] = ring[j]; if ((yi > pt[1]) !== (yj > pt[1]) && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi) c = !c; } return c; };
-  const med = (a) => { a.sort((p, q) => p - q); return a[Math.floor(a.length / 2)]; };
-  for (const f of faces) {
-    const rs = [], gs = [], bs = [];
-    for (let py = 0; py < img.h; py += 2) for (let px = 0; px < img.w; px += 2) {
-      const pt = [x0 + (px + 0.5) * res, y1 - (py + 0.5) * res];
-      if (!f.rings.some((ring) => inRing(pt, ring))) continue;
-      const o = (py * img.w + px) * 3; rs.push(img.rgb[o]); gs.push(img.rgb[o + 1]); bs.push(img.rgb[o + 2]);
-    }
-    if (rs.length >= 8) f.color = '#' + [med(rs), med(gs), med(bs)].map((v) => v.toString(16).padStart(2, '0')).join('');
-  }
-}
-
 // ---------- HTTP ----------
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.md': 'text/plain; charset=utf-8' };
 const PUBLIC = path.join(__dirname, 'public');
@@ -1274,13 +1152,6 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/forecast') return json(apiForecast());
     if (p === '/api/profile') return json(apiProfile());
     // 3D-Haus: getrennt von den Einstellungen gespeichert, damit /api/state klein bleibt
-    if (p === '/api/building' && req.method === 'GET') return json(meta('building', null));
-    if (p === '/api/building' && req.method === 'PUT') {
-      const address = String((await readBody(req)).address || '').trim().slice(0, 120);
-      if (!address) { setMeta('building', null); return json(null); }
-      try { const b = await fetchBuilding(address); setMeta('building', b); return json(b); }
-      catch (e) { return json({ error: e.name === 'TimeoutError' ? 'swisstopo antwortet nicht.' : e.message }, 422); }
-    }
     if (p === '/api/daysrange') { // Tage eines Zeitraums, z. B. für den Jahresrückblick
       const ok = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '');
       if (!ok(sp.get('from')) || !ok(sp.get('to'))) return json({ error: 'from und to als YYYY-MM-DD angeben' }, 400);

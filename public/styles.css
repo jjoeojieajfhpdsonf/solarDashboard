@@ -494,9 +494,6 @@ dialog::backdrop { background: rgba(4, 6, 12, .7); }
 .dlg legend { font-weight: 600; margin-bottom: 8px; }
 .dlg .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
 .dlg .bld-row { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
-.dlg .bld-preview { display: block; width: 100%; max-width: 420px; aspect-ratio: 400 / 330; margin: 10px auto 4px; border-radius: 14px; background: rgb(var(--fg-rgb) / .03); }
-.dlg .bld-preview :is(.flowp, .flowt, text, circle, path[stroke="rgb(var(--fg-rgb) / .18)"]) { display: none; } /* nur das Haus, ohne Werte */
-.dlg .bld-preview[hidden] { display: none; }
 .dlg .bld-opts { grid-template-columns: minmax(0, 1fr) auto; align-items: end; margin-top: 8px; }
 .dlg .bld-opts .val { color: var(--ink); font-variant-numeric: tabular-nums; margin-left: 4px; }
 .dlg input[type=range] { padding: 0; border: 0; background: none; accent-color: var(--feed); height: 34px; }
@@ -729,9 +726,6 @@ dialog.ios-sheet::backdrop { background: rgba(0, 0, 0, .6); }
 .ios-row input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
 .ios-row input[type=color]::-webkit-color-swatch { border: 0; border-radius: 50%; }
 .ios-foot { font-size: 12.5px; color: var(--muted); margin: 7px 14px 0; line-height: 1.4; }
-.ios-sheet .bld-preview { display: block; width: 100%; max-width: 420px; aspect-ratio: 400 / 330; margin: 12px auto; border-radius: 12px; background: var(--group-bg); }
-.ios-sheet .bld-preview[hidden] { display: none; }
-.ios-sheet .bld-preview :is(.flowp, .flowt, text, circle, path[stroke="rgb(var(--fg-rgb) / .18)"]) { display: none; }
 /* Monate: kleines Raster in einer Gruppe */
 .ios-months { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: rgb(var(--fg-rgb) / .08); }
 @media (min-width: 460px) { .ios-months { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
@@ -753,7 +747,6 @@ dialog.ios-sheet::backdrop { background: rgba(0, 0, 0, .6); }
 .ios-nav h2:focus { outline: none; }
 .nav-btn, .ios-action { border-radius: 10px; }
 .nav-btn:focus:not(:focus-visible), .ios-action:focus:not(:focus-visible) { outline: none; }
-.ios-sheet .bld-preview { border-radius: 16px; }
 .ios-months { border-radius: 16px; }
 
 /* Kompakter als das iPhone: kleine und breite Widgets so hoch wie ihr Inhalt, mindestens knapp zwei Drittel einer Zelle.

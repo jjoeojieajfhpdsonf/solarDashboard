@@ -550,210 +550,8 @@
     fog: ic('<path d="M4 9h16M6 13h12M4 17h16" stroke="#C9D2E6"/>'),
   };
 
-  // ---------- 3D-Haus aus den Dachflächen von swisstopo (sonnendach.ch) ----------
-  // Eingabe: Dachflächen mit Umriss (m, Ost/Nord relativ zur Adresse), Neigung und Ausrichtung (0 = Süd, −90 = Ost, 90 = West).
-  // Höhe eines Dachpunkts = Traufhöhe + (Abstand zur Traufe gegen das Gefälle) × tan(Neigung); Wände = Aussenkanten der Dachflächen.
-  // Startansicht: die Flächen mit Modulen zeigen zum Betrachter; rot dreht zusätzlich (Bogenmass, vom Ziehen mit Maus/Finger).
-  // Akku, Wechselrichter und Zähler sind wie in Hersteller-Apps bewusst grösser als in echt, sonst verschwinden sie neben dem Haus.
-  const FACADE = '#cfc8ba'; // heller Verputz; swisstopo kennt keine Fassadenfarben, deshalb einstellbar
-  const saturate = (hex, k) => { // Luftbilder wirken flau: Farbe vom Grau weg verstärken
-    const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)), g = (c[0] + c[1] + c[2]) / 3;
-    return '#' + c.map((v) => Math.max(0, Math.min(255, Math.round(g + (v - g) * k))).toString(16).padStart(2, '0')).join('');
-  };
-  const shade = (hex, k) => `rgb(${[1, 3, 5].map((i) => Math.min(255, Math.round(parseInt(hex.slice(i, i + 2), 16) * k))).join(',')})`;
-  function buildingSVG(b, pvAzimuths, rot = 0, facade = FACADE) {
-    const rad = Math.PI / 180;
-    const faces = b.faces.map((f) => ({ ...f, d: [-Math.sin(f.az * rad), -Math.cos(f.az * rad)] })); // Gefälle-Richtung in (Ost, Nord)
-    // Flächen mit Modulen: Ausrichtung ±25° zu einer eingestellten (Kompassgrad, 180 = Süd), Neigung unter 60°
-    const pvAz = (pvAzimuths?.length ? pvAzimuths : [180]).map((a) => a - 180);
-    const angDiff = (a, c) => Math.abs(((a - c + 540) % 360) - 180);
-    faces.forEach((f) => { f.pv = f.tilt < 60 && f.area >= 6 && pvAz.some((a) => angDiff(f.az, a) <= 25); });
-    const pvFaces = faces.filter((f) => f.pv), lead = pvFaces.length ? pvFaces : [faces.reduce((m, f) => (f.area > m.area ? f : m))];
-    const vx = lead.reduce((a, f) => a + f.d[0] * f.area, 0), vy = lead.reduce((a, f) => a + f.d[1] * f.area, 0);
-    // (Ost, Süd) so drehen, dass (vx, −vy) auf (1, 1) zeigt: der Betrachter steht bei +x +y
-    const th = Math.atan2(1, 1) - Math.atan2(-vy, vx) + rot, cs = Math.cos(th), sn = Math.sin(th);
-    const toW = ([e, n]) => [e * cs + n * sn, e * sn - n * cs];
-    // Traufhöhe aus swissBUILDINGS3D (tiefster Dachpunkt über Gelände), sonst aus der Geschosszahl geschätzt
-    const eave = b.heights?.eave ?? Math.min(12, Math.max(2.8, (b.floors || 2) * 2.7 - 0.6));
-    // Jede Fläche ist eine Ebene z = c − (p·d)·tan(Neigung). Die Höhenlagen c werden per Ausgleichsrechnung bestimmt:
-    // wo sich zwei Flächen berühren, müssen sie gleich hoch sein (stark); der tiefste Punkt jeder Fläche liegt auf Traufhöhe (schwach).
-    const items = faces.flatMap((f) => f.rings.map((ring) => ({ f, ring, t: Math.tan(Math.min(f.tilt, 70) * rad), dot: (p) => p[0] * f.d[0] + p[1] * f.d[1] })));
-    const n = items.length, rows = [];
-    const segDist = (p, a, c) => {
-      const vx2 = c[0] - a[0], vy2 = c[1] - a[1], l2 = vx2 * vx2 + vy2 * vy2;
-      const u = l2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * vx2 + (p[1] - a[1]) * vy2) / l2)) : 0;
-      return Math.hypot(p[0] - a[0] - u * vx2, p[1] - a[1] - u * vy2);
-    };
-    // Anker: der höchste Punkt jeder Fläche liegt auf Firsthöhe (zuverlässiger als der tiefste Dachpunkt, der oft ein Vordach
-    // oder eine weit heruntergezogene Seite ist); ohne Firsthöhe liegt der tiefste Punkt auf der geschätzten Traufe
-    const ridge = b.heights?.ridge;
-    items.forEach((it, i) => {
-      const dots = it.ring.map(it.dot);
-      rows.push(ridge ? { c: { [i]: 1 }, r: ridge + Math.min(...dots) * it.t, w: 0.15 } : { c: { [i]: 1 }, r: eave + Math.max(...dots) * it.t, w: 0.15 });
-      for (const p of it.ring) items.forEach((jt, j) => {
-        if (j === i || Math.min(...jt.ring.slice(0, -1).map((a, k) => segDist(p, a, jt.ring[k + 1]))) > 0.35) return;
-        rows.push({ c: { [i]: 1, [j]: -1 }, r: it.dot(p) * it.t - jt.dot(p) * jt.t, w: 1 });
-      });
-    });
-    // Normalgleichungen lösen (Gauss mit Pivotsuche; n ist klein)
-    const M = Array.from({ length: n }, () => new Array(n + 1).fill(0));
-    for (const { c, r, w } of rows) for (const [a, ca] of Object.entries(c)) {
-      for (const [b2, cb] of Object.entries(c)) M[a][b2] += w * w * ca * cb;
-      M[a][n] += w * w * ca * r;
-    }
-    for (let col = 0; col < n; col++) {
-      const piv = M.reduce((best, rw, k) => (k >= col && Math.abs(rw[col]) > Math.abs(M[best][col]) ? k : best), col);
-      [M[col], M[piv]] = [M[piv], M[col]];
-      for (let k = 0; k < n; k++) if (k !== col && M[col][col]) { const fct = M[k][col] / M[col][col]; for (let m = col; m <= n; m++) M[k][m] -= fct * M[col][m]; }
-    }
-    const cOf = M.map((rw, k) => (rw[k] ? rw[n] / rw[k] : eave));
-    const tile = faces.filter((f) => !f.pv && f.color).sort((a, c) => c.area - a.area)[0]?.color; // Ziegel ohne Module
-    const polys = items.map((it, i) => ({ f: it.f, ring: it.ring, pts: it.ring.slice(0, -1).map((p) => { const [x, y] = toW(p); return [x, y, Math.max(eave * 0.6, cOf[i] - it.dot(p) * it.t)]; }) }));
-    // Wände: Kanten, deren Aussenseite nicht in einer anderen Dachfläche liegt; nur dem Betrachter zugewandte
-    const inside = (pt) => b.faces.some((f) => f.rings.some((r) => {
-      let c = false;
-      for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
-        const [xi, yi] = r[i], [xj, yj] = r[j];
-        if ((yi > pt[1]) !== (yj > pt[1]) && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi) c = !c;
-      }
-      return c;
-    }));
-    const walls = [], foot = [];
-    for (const { ring, pts } of polys) {
-      for (let i = 0; i < pts.length; i++) {
-        const a2 = ring[i], b2 = ring[(i + 1) % pts.length], len = Math.hypot(b2[0] - a2[0], b2[1] - a2[1]);
-        if (len < 0.4) continue;
-        const nx = (b2[1] - a2[1]) / len, ny = -(b2[0] - a2[0]) / len, mid = [(a2[0] + b2[0]) / 2, (a2[1] + b2[1]) / 2];
-        const outA = !inside([mid[0] + nx * 0.4, mid[1] + ny * 0.4]), outB = !inside([mid[0] - nx * 0.4, mid[1] - ny * 0.4]);
-        if (outA === outB) continue;
-        const p = pts[i], q = pts[(i + 1) % pts.length];
-        foot.push([p[0], p[1]], [q[0], q[1]]);
-        const [wx, wy] = toW([outA ? nx : -nx, outA ? ny : -ny]);
-        if (wx + wy <= 0.05) continue;
-        // Licht von links: Wände, die nach links unten schauen, heller
-        const lit = Math.max(0, Math.min(1, (wy - wx + 1) / 2));
-        walls.push({ pts: [[p[0], p[1], 0], [q[0], q[1], 0], q, p], lit, depth: (p[0] + p[1] + q[0] + q[1]) / 2, nrm: [wx, wy], len: Math.hypot(q[0] - p[0], q[1] - p[1]) });
-      }
-    }
-    // Geräte vor der vordersten Hausecke: Zähler links, Wechselrichter in der Mitte, Akku rechts
-    const all = polys.flatMap((p) => p.pts), xs = all.map((p) => p[0]), ys = all.map((p) => p[1]);
-    const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
-    const k = Math.min(2.6, Math.max(1.3, span / 7)); // Vergrösserung der Geräte
-    const front = all.reduce((m, p) => (p[0] + p[1] > m[0] + m[1] ? p : m)), [fx, fy] = front;
-    // Geräte stehen an der grössten dem Betrachter zugewandten Hauswand, parallel dazu: Zähler, Wechselrichter, Akku
-    const wall = walls.reduce((m, w) => (!m || w.len * (w.nrm[0] + w.nrm[1]) > m.len * (m.nrm[0] + m.nrm[1]) ? w : m), null);
-    const r2 = Math.SQRT1_2;
-    const wU = wall ? [(wall.pts[1][0] - wall.pts[0][0]) / wall.len, (wall.pts[1][1] - wall.pts[0][1]) / wall.len] : [r2, -r2];
-    const wN = wall ? wall.nrm : [r2, r2], wM = wall ? [(wall.pts[0][0] + wall.pts[1][0]) / 2, (wall.pts[0][1] + wall.pts[1][1]) / 2] : [fx, fy];
-    const u = wU[0] * r2 - wU[1] * r2 >= 0 ? wU : [-wU[0], -wU[1]]; // "rechts" im Bild
-    const at = (a, o, z = 0) => [wM[0] + u[0] * a + wN[0] * o, wM[1] + u[1] * a + wN[1] * o, z]; // a: entlang der Wand, o: von der Wand weg
-    const box = (a, w, d, h) => ({ a, w, d, h, o: 0.25 * k + d / 2, c: at(a, 0.25 * k + d / 2) });
-    const inv = box(0, 0.55 * k, 0.3 * k, 1.5 * k), bat = box(1.9 * k, 0.75 * k, 0.55 * k, 1.75 * k), met = box(-1.8 * k, 0.5 * k, 0.35 * k, 1.1 * k);
-    // Punkt auf einer Gerätefläche: a quer (−0.5…0.5), o in die Tiefe (0.5 = Vorderseite), z in Metern
-    const on = (e, a, o, z) => at(e.a + a * e.w, e.o + o * e.d, z);
-    const ext = [inv, bat, met].flatMap((e) => [on(e, -0.5, -0.5, 0), on(e, 0.5, 0.5, 0), on(e, -0.5, 0.5, 0), on(e, 0.5, -0.5, 0)]);
-    const gx0 = Math.min(...xs, ...ext.map((p) => p[0])) - 1.8, gx1 = Math.max(...xs, ...ext.map((p) => p[0])) + 1.8;
-    const gy0 = Math.min(...ys, ...ext.map((p) => p[1])) - 1.8, gy1 = Math.max(...ys, ...ext.map((p) => p[1])) + 1.8;
-    // Massstab: alles mit Platz für die Beschriftungen ins SVG (400 × 330)
-    const isoRaw = (x, y, z) => [(x - y) * 0.866, (x + y) * 0.5 - z];
-    const pr = [[gx0, gy0, 0], [gx1, gy0, 0], [gx1, gy1, 0], [gx0, gy1, 0], ...all].map((p) => isoRaw(...p));
-    const minX = Math.min(...pr.map((c) => c[0])), maxX = Math.max(...pr.map((c) => c[0])), minY = Math.min(...pr.map((c) => c[1])), maxY = Math.max(...pr.map((c) => c[1]));
-    const S = Math.min(310 / (maxX - minX), 230 / (maxY - minY));
-    const OX = 200 - ((minX + maxX) / 2) * S, OY = 170 - ((minY + maxY) / 2) * S;
-    const iso = (x, y, z) => [OX + (x - y) * 0.866 * S, OY + ((x + y) * 0.5 - z) * S];
-    const pts = (list) => list.map((p) => iso(...p).map((v) => v.toFixed(1)).join(',')).join(' ');
-    const poly = (list, fill, extra = '') => `<polygon points="${pts(list)}" fill="${fill}" ${extra}/>`;
-    // Gerät als Quader parallel zur Wand: Vorderseite, die sichtbare Schmalseite und Deckel
-    const cube = (e, top, frontC, sideC) => {
-      const side = u[0] + u[1] > 0 ? 0.5 : -0.5; // die Schmalseite, die zum Betrachter zeigt
-      const face = (pa, pb) => [on(e, pa[0], pa[1], 0), on(e, pb[0], pb[1], 0), on(e, pb[0], pb[1], e.h), on(e, pa[0], pa[1], e.h)];
-      return poly(face([-0.5, 0.5], [0.5, 0.5]), frontC) + poly(face([side, 0.5], [side, -0.5]), sideC)
-        + poly([on(e, -0.5, -0.5, e.h), on(e, 0.5, -0.5, e.h), on(e, 0.5, 0.5, e.h), on(e, -0.5, 0.5, e.h)], top);
-    };
-
-    let s = '<defs><filter id="hglow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>'
-      + '<filter id="hshadow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="7"/></filter></defs>';
-    s += poly([[gx0, gy0, 0], [gx1, gy0, 0], [gx1, gy1, 0], [gx0, gy1, 0]], '#151B2E');
-    s += poly([[gx0, gy1, 0], [gx1, gy1, 0], [gx1, gy1, -0.45], [gx0, gy1, -0.45]], '#0E1322');
-    s += poly([[gx1, gy0, 0], [gx1, gy1, 0], [gx1, gy1, -0.45], [gx1, gy0, -0.45]], '#0B0F1C');
-    // weicher Schatten unter dem Haus (Grundriss leicht nach hinten rechts versetzt)
-    if (foot.length) s += `<polygon points="${pts(foot.map(([x, y]) => [x + 0.8, y - 0.6, 0]))}" fill="#05070D" opacity=".75" filter="url(#hshadow)"/>`;
-    walls.sort((a, c) => a.depth - c.depth);
-    for (const w of walls) {
-      s += poly(w.pts, shade(facade, 0.62 + w.lit * 0.38), `stroke="${shade(facade, 0.4)}" stroke-width=".6"`);
-      const [p, q] = [w.pts[0], w.pts[1]], len = Math.hypot(q[0] - p[0], q[1] - p[1]);
-      for (let n = 1; n < Math.floor(len / 2.6); n++) {
-        const t0 = (n * 2.6 - 0.6) / len, t1 = (n * 2.6 + 0.6) / len, P = (t, z) => [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, z];
-        if (t1 >= 0.95) continue;
-        const top = (t) => w.pts[3][2] + (w.pts[2][2] - w.pts[3][2]) * t; // Wandhöhe an dieser Stelle
-        for (let z = 0.9; z + 1.2 + 0.2 <= Math.min(top(t0), top(t1)); z += 2.6) s += poly([P(t0, z), P(t1, z), P(t1, z + 1.2), P(t0, z + 1.2)], '#232A40', 'class="win"');
-      }
-    }
-    // Dachflächen von hinten nach vorne; auf Modul-Flächen ein Modulfeld mit Rand rundherum
-    const depth = (pp) => pp.reduce((m, p) => m + p[0] + p[1] + p[2] * 0.3, 0) / pp.length;
-    polys.sort((a, c) => depth(a.pts) - depth(c.pts));
-    let clip = 0, pvAnchor = null, pvBest = -1;
-    for (const { f, pts: P3 } of polys) {
-      const [dwx, dwy] = toW(f.d), light = Math.max(0, (dwx + dwy) / Math.SQRT2);
-      // Dachfarbe aus dem Luftbild (SWISSIMAGE), je nach Lage zum Licht heller oder dunkler
-      const roof = saturate((f.pv && tile) || f.color || '#4a5070', 1.35);
-      s += poly(P3, shade(roof, 0.8 + light * 0.55), `stroke="${shade(roof, 0.55)}" stroke-width=".8" stroke-linejoin="round"`);
-      if (!f.pv) continue;
-      const cx = P3.reduce((m, p) => m + p[0], 0) / P3.length, cy = P3.reduce((m, p) => m + p[1], 0) / P3.length, cz = P3.reduce((m, p) => m + p[2], 0) / P3.length;
-      const inset = P3.map(([x, y, z]) => [cx + (x - cx) * 0.84, cy + (y - cy) * 0.84, cz + (z - cz) * 0.84 + 0.05]);
-      const id = `pvc${clip++}`, t = Math.tan(Math.min(f.tilt, 70) * rad), ex = -dwy, ey = dwx;
-      s += `<clipPath id="${id}"><polygon points="${pts(inset)}"/></clipPath>`;
-      s += poly(inset, '#1D2E5C', 'class="panel" stroke="#4A6BC0" stroke-width=".9"');
-      const zAt = (x, y) => cz - ((x - cx) * dwx + (y - cy) * dwy) * t;
-      const along = inset.map((p) => p[0] * ex + p[1] * ey), down = inset.map((p) => p[0] * dwx + p[1] * dwy);
-      const a0 = Math.min(...along), a1 = Math.max(...along), d0 = Math.min(...down), d1 = Math.max(...down);
-      const P = (u, v) => { const x = u * ex + v * dwx, y = u * ey + v * dwy; return iso(x, y, zAt(x, y) + 0.05).map((n) => n.toFixed(1)).join(' '); };
-      let lines = '';
-      for (let v = d0 + 1.7; v < d1; v += 1.7) lines += `M${P(a0, v)} L${P(a1, v)} `;
-      for (let u = a0 + 1.1; u < a1; u += 1.1) lines += `M${P(u, d0)} L${P(u, d1)} `;
-      s += `<path d="${lines}" stroke="#3A5BA8" stroke-width=".6" fill="none" clip-path="url(#${id})" opacity=".85"/>`;
-      if (f.area > pvBest) { pvBest = f.area; pvAnchor = [cx, cy, cz]; }
-    }
-    pvAnchor ||= [fx - 2, fy - 2, eave + 1];
-    // Geräte
-    const band = (e, a0, a1, z0, z1, fill, extra = '') => poly([on(e, a0, 0.51, z0), on(e, a1, 0.51, z0), on(e, a1, 0.51, z1), on(e, a0, 0.51, z1)], fill, extra);
-    let batSvg = cube(bat, '#F3F5FA', '#E3E7F0', '#B7BED0');
-    for (let i = 0; i < 4; i++) {
-      const z0 = bat.h * (0.14 + i * 0.2);
-      batSvg += band(bat, -0.34, 0.34, z0, z0 + bat.h * 0.035, '#C9CFDD', `class="cell" data-i="${i}"`);
-    }
-    const metSvg = cube(met, '#4A5374', '#3A4260', '#2C3350');
-    const invSvg = cube(inv, '#E9ECF4', '#D7DCE8', '#AEB6CA') + band(inv, -0.3, 0.3, inv.h * 0.62, inv.h * 0.8, '#2A3150'); // mit Display
-    // von hinten nach vorne zeichnen, damit sich die Geräte richtig überdecken
-    s += [[met, metSvg], [inv, invSvg], [bat, `<g data-k="batTag">${batSvg}</g>`]].sort((a, c) => a[0].c[0] + a[0].c[1] - c[0].c[0] - c[0].c[1]).map((x) => x[1]).join('');
-    // Flüsse: Dach -> Wechselrichter -> Haus (in die Wand), Akku, Zähler
-    const Pp = (p) => iso(...p).map((v) => v.toFixed(1)).join(' ');
-    const invTop = on(inv, 0, 0, inv.h), invMid = on(inv, 0, 0.5, inv.h * 0.45);
-    const houseP = at(0.75 * k, 0, 2.1), batIn = on(bat, -0.5, 0.2, bat.h * 0.4), metIn = on(met, 0.5, 0.2, met.h * 0.5);
-    const mid = (p, q, dz) => [(p[0] + q[0]) / 2 + wN[0] * 0.4, (p[1] + q[1]) / 2 + wN[1] * 0.4, dz];
-    const flows = {
-      pv: `M${Pp(pvAnchor)} Q ${Pp([(pvAnchor[0] + invTop[0]) / 2 + wN[0], (pvAnchor[1] + invTop[1]) / 2 + wN[1], pvAnchor[2]])} ${Pp(invTop)}`,
-      house: `M${Pp(invMid)} Q ${Pp(mid(invMid, houseP, 2.4))} ${Pp(houseP)}`,
-      bat: `M${Pp(invMid)} Q ${Pp(mid(invMid, batIn, 0.3))} ${Pp(batIn)}`,
-      grid: `M${Pp(invMid)} Q ${Pp(mid(invMid, metIn, 0.3))} ${Pp(metIn)}`,
-    };
-    const tag = (key, anchor, tx, ty, align, label) => {
-      const [ax, ay] = iso(...anchor);
-      return `<path data-l="${key}" d="M${ax.toFixed(1)} ${ay.toFixed(1)} L${tx} ${ty + 4}" class="lead" style="stroke:rgb(var(--fg-rgb) / .2)" stroke-width="1" fill="none"/>
-        <circle cx="${ax.toFixed(1)}" cy="${ay.toFixed(1)}" r="2.2" style="fill:rgb(var(--fg-rgb) / .5)"/>
-        <text data-t="${key}" x="${tx}" y="${ty}" text-anchor="${align}"><tspan class="tag-val" data-v="${key}">–</tspan><tspan class="tag-lbl" x="${tx}" dy="14">${label}</tspan><tspan class="tag-sub" data-s="${key}" x="${tx}" dy="14"></tspan></text>`;
-    };
-    s += Object.entries(flows).map(([key, d]) => `<path class="flowt" d="${d}"/><path class="flowp" data-f="${key}" d="${d}"/>`).join('');
-    s += tag('pv', pvAnchor, 40, 34, 'start', 'SOLAR') + tag('house', [fx - 1.2, fy - 1.2, eave * 0.6], 362, 58, 'end', 'ZUHAUSE')
-      + `<g data-k="batTagText">${tag('bat', on(bat, 0.3, 0.5, bat.h * 0.7), 362, 262, 'end', 'BATTERIE')}</g>`
-      + tag('grid', on(met, 0, 0.5, met.h * 0.8), 40, 286, 'start', 'NETZ');
-    return s;
-  }
-
   // ---------- 3D-Haus (isometrisch) ----------
   // Weltkoordinaten in Metern: x nach rechts unten, y nach links unten, z nach oben; Projektion ins SVG (400 × 330)
-  const houseFromSettings = (b, s = settings) => buildingSVG(b, String(s.pvOrientation || '180').split(/[\s,;]+/).map(Number).filter(Number.isFinite),
-    (Number(s.houseRot) || 0) * Math.PI / 180, s.facadeColor || FACADE);
   function houseSVG() {
     // Farben: dunkel wie gehabt; hell mit hellen Fassaden, Dach und Module bleiben dunkel
     const L = isLight();
@@ -1845,7 +1643,6 @@
           qa('.panel').forEach((p) => { p.setAttribute('fill', glow > 0.02 ? `color-mix(in srgb, #FFC23D ${Math.round(18 + glow * 60)}%, #1D2E5C)` : '#1D2E5C'); p.setAttribute('filter', glow > 0.15 ? 'url(#hglow)' : ''); });
           const lights = lightsOn();
           ctx.body.classList.toggle('lights', lights);
-          qa('.win:not([fill^="url"])').forEach((w) => w.setAttribute('fill', lights ? '#C9A35A' : isLight() ? '#9FB2D3' : '#2F3A5E')); // echtes Haus ohne Lichtebene
           qa('.cell').forEach((c) => c.setAttribute('fill', b && b.soc > Number(c.dataset.i) * 25 ? '#3CC495' : '#C9CFDD'));
 
           // grosse Anzeige (nur bei breitem Widget sichtbar)
@@ -1907,12 +1704,6 @@
           fx.set(kind === 'rain' || kind === 'storm' || kind === 'snow' ? kind : null, strength);
           setHTML(wx, `${WX_ICON[scene.replace(' ', '-')] || WX_ICON[scene.split(' ')[0]] || ''}<span><b>${f0.format(c.temp)} °C</b><small>${esc(c.text || '')}</small></span>`);
         }
-        // echtes Haus aus swisstopo-Daten, falls in den Einstellungen geladen; sonst bleibt das Standardhaus
-        // echtes Haus nur, wenn in den Einstellungen gewählt; Blickrichtung und Fassadenfarbe kommen ebenfalls von dort
-        if (settings.houseModel === 'real') api('/api/building').then((b) => {
-          if (!b?.faces?.length) return;
-          try { ctx.body.querySelector('.house').innerHTML = houseFromSettings(b); ctx.update(); } catch (e) { console.error('3D-Haus:', e); }
-        }).catch(() => {});
         ctx.refresh = loadSky;
         ctx.update(); loadSky();
 
@@ -3206,12 +2997,7 @@
       + 'Mehrere Dachflächen bei der Ausrichtung mit Komma trennen (gleich gross angenommen). Für die Prognose gehen nur Standort, Neigung und Ausrichtung an open-meteo.com. Standort leer lassen schaltet sie aus.';
     fillInvNames(s.inverterCount, s.inverterNames);
     $('monthDist').innerHTML = s.monthDist.map((v, i) => `<label>${MON[i]}<input data-md="${i}" type="text" inputmode="decimal" value="${v}"></label>`).join('');
-    form.elements.bldAddress.value = '';
     form.elements.theme.value = themePref();
-    form.elements.houseRot.value = s.houseRot || 0;
-    form.elements.facadeColor.value = s.facadeColor || FACADE;
-    form.elements.houseModel.value = s.houseModel || 'default';
-    showBuilding();
     $('dlg').showModal();
   }
   // Netzbezug: automatisch aus den ElCom-Preisen der Gemeinde (Feld nur zur Anzeige) oder von Hand
@@ -3243,39 +3029,6 @@
     try { localStorage.setItem('solar.theme', e.target.value); } catch { /* egal */ }
     applyTheme(); readColors(); renderBoard();
   });
-  // 3D-Haus: Adresse -> Dachflächen von swisstopo laden (eigener Knopf, unabhängig vom Speichern)
-  let bldData = null;
-  // Vorschau mit den Werten im Formular (noch nicht gespeichert)
-  function previewBuilding() {
-    const rot = Number(form.elements.houseRot.value) || 0;
-    $('houseRotVal').textContent = rot ? `${rot > 0 ? '+' : ''}${rot}°` : 'Start';
-    const pv = $('bldPreview'), ok = !!bldData?.faces?.length;
-    pv.toggleAttribute('hidden', !ok); // SVG kennt die hidden-Eigenschaft nicht, nur das Attribut
-    // eigene IDs, sonst greifen Filter und Clip-Pfade auf die des Hauses im Widget
-    if (ok) pv.innerHTML = houseFromSettings(bldData, { ...settings, pvOrientation: form.elements.pvOrientation.value, houseRot: rot, facadeColor: form.elements.facadeColor.value })
-      .replace(/(id="|url\(#)(pvc\d+|hglow|hshadow)/g, '$1pre-$2');
-  }
-  form.elements.houseRot.addEventListener('input', previewBuilding);
-  form.elements.facadeColor.addEventListener('input', previewBuilding);
-  $('btnFacade').onclick = () => { form.elements.facadeColor.value = FACADE; previewBuilding(); };
-  $('btnRot0').onclick = () => { form.elements.houseRot.value = 0; previewBuilding(); };
-  async function showBuilding() {
-    const b = bldData = await api('/api/building').catch(() => null);
-    previewBuilding();
-    $('bldHint').textContent = b?.faces ? `Geladen: ${b.label} · ${b.faces.length} Dachflächen${b.floors ? ` · ${b.floors} Geschosse` : ''}. Leer lassen und laden setzt das Standardhaus.`
-      : 'Die Adresse geht an die Geodienste des Bundes (geo.admin.ch). Daraus entsteht das Haus mit deiner echten Dachform.';
-    if (b?.address && !form.elements.bldAddress.value) form.elements.bldAddress.value = b.address;
-  }
-  $('btnBld').onclick = async () => {
-    const btn = $('btnBld'), label = btn.textContent;
-    btn.disabled = true; btn.textContent = 'Lädt…';
-    try {
-      const r = await fetch('/api/building', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: form.elements.bldAddress.value }) });
-      const b = await r.json();
-      if (b?.error) alert(b.error); else { await showBuilding(); renderBoard(); }
-    } catch { alert('Laden hat nicht geklappt. Ist der Dashboard-Server erreichbar?'); }
-    finally { btn.disabled = false; btn.textContent = label; }
-  };
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = $('btnSave');
@@ -3292,9 +3045,6 @@
       location: form.elements.location.value,
       pvTilt: num(form.elements.pvTilt),
       pvOrientation: form.elements.pvOrientation.value,
-      houseRot: Number(form.elements.houseRot.value) || 0,
-      facadeColor: form.elements.facadeColor.value,
-      houseModel: form.elements.houseModel.value,
       inverterNames: [...form.querySelectorAll('[data-inv]')].map((x) => x.value),
       monthDist: [...form.querySelectorAll('[data-md]')].map((x) => num(x) ?? 0),
     };
