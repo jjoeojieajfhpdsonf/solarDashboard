@@ -102,9 +102,10 @@ samt Standort. Sie wird einmal separat kopiert.
    docker stop solar-dashboard-iphone
    scp data/solar.db <user>@<server>:<pfad>/data/solar.db
    ```
-4. Auf dem Server starten: `docker compose up -d --build`. Der Server muss den Solar-Log unter `SOLARLOG_URL`
+4. Ist Port 8082 schon belegt, im Projektordner eine Datei `.env` mit z. B. `SOLAR_PORT=8090` anlegen.
+   Dann auf dem Server starten: `docker compose up -d --build`. Der Server muss den Solar-Log unter `SOLARLOG_URL`
    erreichen (gleiches Heimnetz). Port und Abfragetakt stehen in `docker-compose.yml`.
-5. Auf dem Mac den alten Container nicht wieder starten, damit nur ein Dashboard den Solar-Log abfragt.
+6. Auf dem Mac den alten Container nicht wieder starten, damit nur ein Dashboard den Solar-Log abfragt.
 
 Lücken während des Umzugs füllt das Dashboard von selbst aus der Tageskurve des Solar-Logs (heute sofort,
 vergangene Tage kurz nach Mitternacht).

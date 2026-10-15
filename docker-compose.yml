@@ -4,11 +4,11 @@ services:
     container_name: solar-dashboard-iphone
     restart: unless-stopped
     ports:
-      - "8082:8080"   # Widget-Design im iPhone-Stil, läuft parallel zu 8080 (alt) und 8081 (neu)
+      - "${SOLAR_PORT:-8082}:8080"   # Port aussen; auf dem Server in der Datei .env setzen, z. B. SOLAR_PORT=8090
     environment:
       SOLARLOG_URL: http://192.168.0.76
       PLANT_NAME: Solaranlage
-      POLL_SECONDS: 15      # drittes Dashboard am selben Solar-Log: langsamer Takt schont das Gerät
+      POLL_SECONDS: 15      # neue Werte liefert der Solar-Log etwa alle 15 s
       TARIFF_IMPORT: 0.30   # Startwerte, später im Dashboard änderbar
       TARIFF_FEED: 0.10     # CHF/kWh Rückliefervergütung
       TZ: Europe/Zurich
