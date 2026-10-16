@@ -94,7 +94,9 @@ Eigenverbrauch, Einspeisung und Netzbezug gibt es nur für Tage, an denen das Da
 ## Push-Mitteilungen
 Das Dashboard schickt Mitteilungen selbst (Web Push), ohne zusätzliche App oder fremden Dienst: Störung des Solar-Logs,
 Akku voll, Tagesbilanz am Abend (Produktion gegen Soll, Verbrauch, selbst versorgt, Einspeisung, Wert). Antippen öffnet das Dashboard an der passenden Stelle. Einschalten in den Einstellungen
-unter **Mitteilungen → Auf diesem Gerät erlauben**, für jedes Gerät einzeln.
+unter **Mitteilungen → Auf diesem Gerät erlauben**, für jedes Gerät einzeln. Welche Mitteilungen kommen und um welche
+Uhrzeit die Tagesbilanz, stellt jedes Gerät für sich ein (gilt sofort, gespeichert beim Abo des Geräts auf dem Server).
+Die Testmitteilung geht nur an das Gerät, das sie auslöst.
 
 Voraussetzungen: HTTPS (z. B. `tailscale serve`) und auf dem iPhone die App auf dem Home-Bildschirm (ab iOS 16.4).
 Der Server verschlüsselt jede Nachricht für das jeweilige Gerät (RFC 8291) und erzeugt beim ersten Start sein eigenes

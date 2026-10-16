@@ -38,7 +38,7 @@ const DEFAULT_SETTINGS = {
   batteryCapacity: Number(env.BATTERY_KWH || 0), // kWh, 0 = unbekannt
   // Ertragsprognose: ohne Standort aus, dann gibt es keine Anfragen nach aussen
   location: '', lat: null, lon: null, placeLabel: '',
-  // Push-Mitteilungen (gehen nur an Geräte, die sie in den Einstellungen erlaubt haben)
+  // Push-Mitteilungen: Auswahl gilt pro Gerät (beim Abo gespeichert); diese Werte sind nur die Vorgabe für ältere Abos
   pushOutage: true, pushFull: true, pushEvening: true, pushEveningTime: '19:00', pushMonth: true,
   pvTilt: 30, pvOrientation: '180',
 };
@@ -1059,21 +1059,31 @@ async function pushTo(sub, msg) {
   });
   return { status: r.status, text: r.ok ? '' : (await r.text().catch(() => '')).slice(0, 200) };
 }
-// an alle angemeldeten Geräte; abgelaufene Abos (404/410) fallen weg
-async function pushAll(msg) {
-  const subs = meta('pushSubs', []), keep = [];
-  let sent = 0, error = null;
+// Auswahl eines Geräts: welche Mitteilungen es will und wann die Tagesbilanz kommt. Ältere Abos ohne eigene Auswahl
+// übernehmen die frühere gemeinsame Einstellung.
+const PUSH_KINDS = ['outage', 'full', 'evening', 'month'];
+function subPrefs(sub) {
+  const p = sub.prefs || {}, s = settings, legacy = { outage: s.pushOutage, full: s.pushFull, evening: s.pushEvening, month: s.pushMonth };
+  const out = Object.fromEntries(PUSH_KINDS.map((k) => [k, typeof p[k] === 'boolean' ? p[k] : legacy[k] !== false]));
+  out.eveningTime = /^\d{2}:\d{2}$/.test(p.eveningTime || '') ? p.eveningTime : s.pushEveningTime || '19:00';
+  return out;
+}
+// an alle angemeldeten Geräte, die diese Mitteilung wollen (want prüft die Auswahl); abgelaufene Abos (404/410) fallen weg
+async function pushAll(msg, want = () => true) {
+  const subs = meta('pushSubs', []), gone = new Set();
+  let sent = 0, total = 0, error = null;
   for (const s of subs) {
+    if (!want(subPrefs(s), s)) continue;
+    total++;
     try {
       const r = await pushTo(s, msg);
-      if (r.status === 404 || r.status === 410) continue;
-      keep.push(s);
+      if (r.status === 404 || r.status === 410) { gone.add(s.endpoint); continue; }
       if (r.status >= 200 && r.status < 300) sent++;
       else { error = `${new URL(s.endpoint).host}: HTTP ${r.status} ${r.text}`; console.error(new Date().toISOString(), 'Push:', error); }
-    } catch (e) { keep.push(s); error = e.message; console.error(new Date().toISOString(), 'Push:', e.message); }
+    } catch (e) { error = e.message; console.error(new Date().toISOString(), 'Push:', e.message); }
   }
-  if (keep.length !== subs.length) setMeta('pushSubs', keep);
-  return { sent, total: subs.length, error };
+  if (gone.size) setMeta('pushSubs', meta('pushSubs', []).filter((s) => !gone.has(s.endpoint)));
+  return { sent, total, error };
 }
 const notifyState = meta('notifyState', {});
 const markSent = (k, v) => { notifyState[k] = v; setMeta('notifyState', notifyState); };
@@ -1113,48 +1123,52 @@ function reviewMsg(ref) {
     url: `./?rueckblick=${ref}`, tag: `review-${ref}` };
 }
 let belowDay = null; // Tag, an dem der Akku unter 95 % war (erst danach zählt "voll")
-// Eine Mitteilung gilt erst als erledigt, wenn sie mindestens ein Gerät erreicht hat. Sonst nächste Minute nochmals,
-// nach 5 Fehlversuchen wird aufgegeben (bis zum nächsten Anlass), damit nichts endlos versucht wird.
+// Eine Mitteilung gilt erst als erledigt, wenn sie mindestens ein Gerät erreicht hat (oder keines sie will). Sonst nächste
+// Minute nochmals, nach 5 Fehlversuchen wird aufgegeben (bis zum nächsten Anlass), damit nichts endlos versucht wird.
 const tries = {};
-async function sendOnce(key, value, msg) {
-  const r = await pushAll(msg);
-  if (r.sent || (tries[key] = (tries[key] || 0) + 1) >= 5) {
+async function sendOnce(key, value, msg, want) {
+  const r = await pushAll(msg, want);
+  if (r.sent || !r.total || (tries[key] = (tries[key] || 0) + 1) >= 5) {
     markSent(key, value); delete tries[key];
-    if (!r.sent) console.error(new Date().toISOString(), `Mitteilung "${msg.title}" aufgegeben: ${r.error || 'kein Gerät erreicht'}`);
+    if (!r.sent && r.total) console.error(new Date().toISOString(), `Mitteilung "${msg.title}" aufgegeben: ${r.error || 'kein Gerät erreicht'}`);
   }
 }
 async function notifyTick() {
-  const s = settings;
-  if (CFG.demo || !meta('pushSubs', []).length) return;
+  const subs = meta('pushSubs', []);
+  if (CFG.demo || !subs.length) return;
   const now = Date.now(), day = dayKey(now), hm = clockOf(now);
   try {
-    if (s.pushOutage && lastOk) {
+    const want = (k) => (p) => p[k];
+    if (lastOk) {
       const down = now - lastOk > 15 * 60e3;
       if (down && !notifyState.outage) {
-        await sendOnce('outage', now, { title: 'Solar-Log antwortet nicht', body: `Seit ${clockOf(lastOk)} keine Daten.${lastError ? ` ${lastError}.` : ''}`, url: './', tag: 'outage', urgent: true });
+        await sendOnce('outage', now, { title: 'Solar-Log antwortet nicht', body: `Seit ${clockOf(lastOk)} keine Daten.${lastError ? ` ${lastError}.` : ''}`, url: './', tag: 'outage', urgent: true }, want('outage'));
       } else if (!down && notifyState.outage) {
-        await sendOnce('outage', 0, { title: 'Solar-Log wieder erreichbar', body: 'Die Daten kommen wieder, Lücken werden aus der Tageskurve ergänzt.', url: './?tab=day&w=day', tag: 'outage' });
+        await sendOnce('outage', 0, { title: 'Solar-Log wieder erreichbar', body: 'Die Daten kommen wieder, Lücken werden aus der Tageskurve ergänzt.', url: './?tab=day&w=day', tag: 'outage' }, want('outage'));
       }
     }
     const b = live.bat;
     if (b && b.soc < 95) belowDay = day;
-    if (s.pushFull && b && b.soc >= 99 && belowDay === day && notifyState.fullDay !== day) {
-      await sendOnce('fullDay', day, { title: 'Akku voll', body: `Der Akku ist um ${hm} voll geladen.`, url: './?tab=day&w=battery', tag: 'battery' });
+    if (b && b.soc >= 99 && belowDay === day && notifyState.fullDay !== day) {
+      await sendOnce('fullDay', day, { title: 'Akku voll', body: `Der Akku ist um ${hm} voll geladen.`, url: './?tab=day&w=battery', tag: 'battery' }, want('full'));
     }
     // Rückblick am 1. des Monats ab 09:00 (am 1. Januar zusätzlich das Jahr); Antippen öffnet ihn direkt
-    if (s.pushMonth && day.slice(8) === '01' && hm >= '09:00') {
+    if (day.slice(8) === '01' && hm >= '09:00') {
       const [y, m] = day.split('-').map(Number), prev = m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
       for (const ref of m === 1 ? [String(y - 1), prev] : [prev]) {
         if (notifyState[`review-${ref}`]) continue;
         const msg = reviewMsg(ref);
-        if (msg) await sendOnce(`review-${ref}`, day, msg); else markSent(`review-${ref}`, day);
+        if (msg) await sendOnce(`review-${ref}`, day, msg, want('month')); else markSent(`review-${ref}`, day);
       }
     }
-    // Tagesbilanz am Abend: einmal pro Tag und eingestellter Uhrzeit (eine neue Uhrzeit gilt auch am selben Tag)
-    const at = s.pushEveningTime || '19:00', mark = `${day} ${at}`;
-    if (s.pushEvening && hm >= at && notifyState.eveningDay !== mark) {
+    // Tagesbilanz am Abend: jedes Gerät zu seiner Uhrzeit, einmal pro Tag und Uhrzeit (eine neue Uhrzeit gilt auch am
+    // selben Tag). Geräte mit derselben Uhrzeit bekommen sie gemeinsam.
+    const times = new Set(subs.map(subPrefs).filter((p) => p.evening).map((p) => p.eveningTime));
+    for (const at of times) {
+      const key = `evening ${at}`;
+      if (hm < at || notifyState[key] === day || notifyState.eveningDay === `${day} ${at}`) continue;
       const msg = daySummary(day);
-      if (msg) await sendOnce('eveningDay', mark, msg);
+      if (msg) await sendOnce(key, day, msg, (p) => p.evening && p.eveningTime === at);
     }
   } catch (e) { console.error(new Date().toISOString(), 'Mitteilungen:', e.message); }
 }
@@ -1308,8 +1322,9 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/push/subscribe' && req.method === 'POST') {
       const b = await readBody(req), ep = String(b.endpoint || '');
       if (!/^https:\/\//.test(ep) || !b.keys?.p256dh || !b.keys?.auth) return json({ error: 'Ungültiges Abo.' }, 400);
-      const subs = meta('pushSubs', []).filter((x) => x.endpoint !== ep);
-      subs.push({ endpoint: ep, keys: { p256dh: String(b.keys.p256dh), auth: String(b.keys.auth) }, created: Date.now(), ua: String(req.headers['user-agent'] || '').slice(0, 120) });
+      const old = meta('pushSubs', []).find((x) => x.endpoint === ep), subs = meta('pushSubs', []).filter((x) => x.endpoint !== ep);
+      // erneute Anmeldung (Selbstheilung beim Öffnen der Einstellungen) behält die Auswahl dieses Geräts
+      subs.push({ endpoint: ep, keys: { p256dh: String(b.keys.p256dh), auth: String(b.keys.auth) }, created: old?.created ?? Date.now(), ua: String(req.headers['user-agent'] || '').slice(0, 120), ...(old?.prefs ? { prefs: old.prefs } : {}) });
       setMeta('pushSubs', subs.slice(-10));
       return json({ ok: true, total: Math.min(10, subs.length) });
     }
@@ -1318,9 +1333,23 @@ const server = http.createServer(async (req, res) => {
       setMeta('pushSubs', meta('pushSubs', []).filter((x) => x.endpoint !== ep));
       return json({ ok: true });
     }
+    // Auswahl eines Geräts lesen und (mit prefs) ändern; das Gerät weist sich mit seiner Abo-Adresse aus
+    if (p === '/api/push/prefs' && req.method === 'POST') {
+      const b = await readBody(req), subs = meta('pushSubs', []), sub = subs.find((x) => x.endpoint === String(b.endpoint || ''));
+      if (!sub) return json({ error: 'Dieses Gerät ist nicht angemeldet.' }, 404);
+      if (b.prefs && typeof b.prefs === 'object') {
+        const next = subPrefs(sub);
+        for (const k of PUSH_KINDS) if (typeof b.prefs[k] === 'boolean') next[k] = b.prefs[k];
+        if (/^\d{2}:\d{2}$/.test(b.prefs.eveningTime || '')) next.eveningTime = b.prefs.eveningTime;
+        sub.prefs = next; setMeta('pushSubs', subs);
+      }
+      return json(subPrefs(sub));
+    }
     if (p === '/api/push/test' && req.method === 'POST') {
+      // nur an das Gerät, das testet (ältere Clients ohne Adresse: an alle)
+      const ep = String((await readBody(req).catch(() => ({}))).endpoint || '');
       const pvTxt = live.pv < 1000 ? `${Math.round(live.pv)} W` : `${(live.pv / 1000).toFixed(2)} kW`;
-      const r = await pushAll({ title: 'Test vom Solar-Dashboard', body: `So sehen Mitteilungen aus. Solar gerade ${pvTxt}. Antippen öffnet das Dashboard.`, url: './?tab=now', tag: 'test' });
+      const r = await pushAll({ title: 'Test vom Solar-Dashboard', body: `So sehen Mitteilungen aus. Solar gerade ${pvTxt}. Antippen öffnet das Dashboard.`, url: './?tab=now', tag: 'test' }, (_, s) => !ep || s.endpoint === ep);
       return json(r, r.sent ? 200 : 422);
     }
     // 3D-Haus: getrennt von den Einstellungen gespeichert, damit /api/state klein bleibt

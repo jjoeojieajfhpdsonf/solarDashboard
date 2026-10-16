@@ -3021,9 +3021,7 @@
     form.elements.tariffAuto.value = s.tariffAuto === false ? '0' : '1';
     form.elements.tariffCategory.value = s.tariffCategory || 'H5';
     tariffForm();
-    for (const k of ['pushOutage', 'pushFull', 'pushEvening', 'pushMonth']) form.elements[k].value = s[k] === false ? '0' : '1';
-    form.elements.pushEveningTime.value = s.pushEveningTime || '19:00';
-    pushUI();
+    pushUI(); // Auswahl der Mitteilungen kommt pro Gerät vom Server
     form.elements.pvTilt.value = s.pvTilt ?? 30;
     form.elements.pvOrientation.value = s.pvOrientation || '180';
     $('fcHint').textContent = (s.lat != null ? `Gefunden: ${s.placeLabel} (${f2.format(s.lat)}, ${f2.format(s.lon)}). ` : '')
@@ -3080,10 +3078,25 @@
     }
     btn.disabled = denied; test.disabled = !sub;
     btn.textContent = sub ? 'Auf diesem Gerät ausschalten' : 'Auf diesem Gerät erlauben';
+    // Auswahl dieses Geräts laden; ohne Anmeldung gibt es nichts auszuwählen
+    let prefs = null;
+    if (sub) prefs = await fetch('/api/push/prefs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint }) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    for (const [k, f] of PUSH_FIELDS) {
+      const el = form.elements[f];
+      el.disabled = !prefs; el.closest('.ios-row').classList.toggle('off', !prefs);
+      if (prefs) el.value = k === 'eveningTime' ? prefs.eveningTime : prefs[k] ? '1' : '0';
+    }
     hint.textContent = denied ? 'Mitteilungen sind für diese App blockiert. Erlauben in den iPhone-Einstellungen → Mitteilungen → Solar.'
-      : sub ? 'Dieses Gerät bekommt Mitteilungen. Antippen öffnet das Dashboard an der passenden Stelle.'
-        : 'Mitteilungen kommen vom Dashboard selbst, ohne zusätzliche App. Gilt für jedes Gerät einzeln.';
+      : sub ? 'Dieses Gerät bekommt die oben gewählten Mitteilungen. Die Auswahl gilt nur für dieses Gerät, jedes Gerät hat seine eigene.'
+        : 'Mitteilungen kommen vom Dashboard selbst, ohne zusätzliche App. Erst erlauben, dann pro Gerät auswählen, welche.';
   }
+  // Auswahl gilt sofort und nur für dieses Gerät (nicht über "Sichern" der übrigen Einstellungen)
+  const PUSH_FIELDS = [['outage', 'pushOutage'], ['full', 'pushFull'], ['evening', 'pushEvening'], ['eveningTime', 'pushEveningTime'], ['month', 'pushMonth']];
+  for (const [k, f] of PUSH_FIELDS) form.elements[f].addEventListener('change', (e) => {
+    if (!pushSub || (k === 'eveningTime' && !/^\d{2}:\d{2}$/.test(e.target.value))) return;
+    const prefs = { [k]: k === 'eveningTime' ? e.target.value : e.target.value === '1' };
+    fetch('/api/push/prefs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: pushSub.endpoint, prefs }) }).catch(() => alert('Mitteilungen: Auswahl nicht gespeichert. Ist der Server erreichbar?'));
+  });
   $('btnPush').onclick = async () => {
     const btn = $('btnPush');
     try {
@@ -3107,8 +3120,8 @@
     const btn = $('btnPushTest'), label = btn.textContent;
     btn.disabled = true; btn.textContent = 'Sendet…';
     try {
-      const r = await (await fetch('/api/push/test', { method: 'POST' })).json();
-      btn.textContent = r.sent ? `Gesendet an ${r.sent} ${r.sent === 1 ? 'Gerät' : 'Geräte'} ✓` : 'Nicht gesendet';
+      const r = await (await fetch('/api/push/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: pushSub?.endpoint }) })).json();
+      btn.textContent = r.sent ? 'Gesendet ✓' : 'Nicht gesendet';
       if (!r.sent) alert(r.total ? `Mitteilung nicht gesendet. ${r.error || ''}` : 'Mitteilung nicht gesendet: Der Server kennt kein Gerät. Auf diesem Gerät „ausschalten“ und wieder „erlauben“.');
     } catch { btn.textContent = 'Fehler'; }
     setTimeout(() => { btn.disabled = false; btn.textContent = label; }, 3000);
@@ -3138,8 +3151,6 @@
       tariffImport: num(form.elements.tariffImport),
       tariffAuto: form.elements.tariffAuto.value === '1',
       tariffCategory: form.elements.tariffCategory.value,
-      pushOutage: form.elements.pushOutage.value === '1', pushFull: form.elements.pushFull.value === '1', pushEvening: form.elements.pushEvening.value === '1', pushMonth: form.elements.pushMonth.value === '1',
-      pushEveningTime: form.elements.pushEveningTime.value || undefined,
       tariffFeed: num(form.elements.tariffFeed),
       specificTarget: num(form.elements.specificTarget),
       batteryCapacity: num(form.elements.batteryCapacity),

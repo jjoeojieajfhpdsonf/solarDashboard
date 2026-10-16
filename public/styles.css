@@ -705,6 +705,7 @@ dialog.ios-sheet::backdrop { background: rgba(0, 0, 0, .6); }
 .ios-group { background: var(--group-bg); border-radius: 16px; overflow: hidden; }
 .ios-group:empty { display: none; }
 .ios-row { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 6px 14px; font-size: 15.5px; color: var(--ink); position: relative; width: 100%; box-sizing: border-box; }
+.ios-row.off { opacity: .45; } /* Mitteilungsauswahl, solange dieses Gerät nicht angemeldet ist */
 .ios-row + .ios-row::before, .ios-group > label + label::before { content: ""; position: absolute; top: 0; left: 14px; right: 0; height: 1px; background: rgb(var(--fg-rgb) / .08); }
 .ios-row > span { flex: 1 0 auto; min-width: 0; }
 .ios-row input:not([type=range]):not([type=color]), .ios-row select {
